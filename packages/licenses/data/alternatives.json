@@ -1,0 +1,12 @@
+{
+	"ckeditor5": [
+		{ "paquete": "quill", "licencia": "BSD-3-Clause" },
+		{ "paquete": "@tiptap/core", "licencia": "MIT" },
+		{ "paquete": "lexical", "licencia": "MIT" }
+	],
+	"tinymce": [
+		{ "paquete": "quill", "licencia": "BSD-3-Clause" },
+		{ "paquete": "@tiptap/core", "licencia": "MIT" },
+		{ "paquete": "lexical", "licencia": "MIT" }
+	]
+}

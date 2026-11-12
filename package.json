@@ -1,0 +1,41 @@
+{
+	"name": "master-creator-tools",
+	"version": "0.0.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"packageManager": "pnpm@12.18.0",
+	"engines": {
+		"node": "^22.18 || ^24.11 || >=26"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "vitest run",
+		"test:e2e": "playwright test",
+		"build": "pnpm -r --if-present run build",
+		"start": "node packages/cli/dist/main.js --version",
+		"mp:deriva": "node masterplan/bin/masterplan.mjs deriva"
+	},
+	"dependencies": {
+		"@clack/prompts": "1.8.1",
+		"@octokit/rest": "22.0.1",
+		"commander": "15.1.0",
+		"eta": "4.6.0",
+		"fast-glob": "3.3.3",
+		"ignore": "7.0.14",
+		"picocolors": "1.1.1",
+		"spdx-correct": "3.2.0",
+		"spdx-expression-parse": "5.0.0",
+		"spdx-satisfies": "6.0.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.6",
+		"@types/node": "26.6.6",
+		"playwright": "1.65.0",
+		"tsdown": "0.23.7",
+		"typescript": "7.0.2",
+		"vite": "8.3.6",
+		"vitest": "5.1.0"
+	}
+}

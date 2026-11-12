@@ -1,0 +1,19 @@
+name: Bug report / Reporte de error
+description: Report something that does not work / Reporta algo que no funciona
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / ¿Qué pasó?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Pasos para reproducir
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Do not paste secrets or personal data. / No pegues secretos ni datos personales.

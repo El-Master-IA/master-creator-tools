@@ -1,0 +1,43 @@
+{
+	"name": "master-creator-tools",
+	"version": "0.0.0",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/El-Master-IA/master-creator-tools.git",
+		"directory": "packages/cli"
+	},
+	"homepage": "https://github.com/El-Master-IA/master-creator-tools#readme",
+	"bugs": {
+		"url": "https://github.com/El-Master-IA/master-creator-tools/issues"
+	},
+	"type": "module",
+	"bin": {
+		"mct": "./dist/main.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsdown"
+	},
+	"engines": {
+		"node": "^22.18 || ^24.11 || >=26"
+	},
+	"dependencies": {
+		"@clack/prompts": "1.8.1",
+		"@octokit/rest": "22.0.1",
+		"commander": "15.1.0",
+		"eta": "4.6.0",
+		"fast-glob": "3.3.3",
+		"ignore": "7.0.14",
+		"picocolors": "1.1.1",
+		"spdx-correct": "3.2.0",
+		"spdx-expression-parse": "5.0.0",
+		"spdx-satisfies": "6.0.1"
+	},
+	"devDependencies": {
+		"@mct/contract": "workspace:*",
+		"@mct/core": "workspace:*"
+	}
+}

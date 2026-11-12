@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-tarball:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: tag coincide con la versión del paquete
+        run: |
+          set -eu
+          version="$(node -p "require('./packages/cli/package.json').version")"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - name: npm pack
+        id: pack
+        run: |
+          set -eu
+          cp LICENSE README.md packages/cli/
+          mkdir -p "$RUNNER_TEMP/pack"
+          cd packages/cli
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+          test "$(ls "$RUNNER_TEMP"/pack/*.tgz | wc -l)" -eq 1
+          tar -tzf "$RUNNER_TEMP"/pack/*.tgz | grep -qx 'package/LICENSE'
+          echo "sha256=$(sha256sum "$RUNNER_TEMP"/pack/*.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: install in clean container and run mct
+        run: |
+          set -eu
+          docker run --rm -v "$RUNNER_TEMP/pack:/pkg:ro" node:24-slim sh -euc '
+            npm install -g --ignore-scripts /pkg/*.tgz
+            mct --version
+            mct doctor
+            mkdir -p /tmp/fixture /tmp/ws
+            printf "{\"name\":\"fixture\",\"version\":\"1.0.0\"}\n" > /tmp/fixture/package.json
+            printf "console.log(1);\n" > /tmp/fixture/index.js
+            mct init /tmp/fixture --dest /tmp/ws
+            cd /tmp/ws
+            mct scan --json
+          '
+
+  publish:
+    needs: smoke-tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Entorno protegido: GitHub pide la aprobación de un revisor antes de publicar.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - name: npm pack (mismo tarball que pasó el smoke)
+        env:
+          SMOKE_SHA256: ${{ needs.smoke-tarball.outputs.sha256 }}
+        run: |
+          set -eu
+          cp LICENSE README.md packages/cli/
+          mkdir -p "$RUNNER_TEMP/pack"
+          cd packages/cli
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+          test -n "$SMOKE_SHA256"
+          test "$(sha256sum "$RUNNER_TEMP"/pack/*.tgz | cut -d' ' -f1)" = "$SMOKE_SHA256"
+      - name: npm publish a next (OIDC trusted publishing)
+        run: npm publish "$RUNNER_TEMP"/pack/*.tgz --provenance --access public --tag next

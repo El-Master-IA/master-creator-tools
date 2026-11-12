@@ -1,0 +1,20 @@
+# Dependencies / Dependencias
+node_modules/
+
+# Environment and secrets / Entorno y secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build and tooling / Construcción y herramientas
+dist/
+build/
+coverage/
+.mct/
+
+# System / Sistema
+.DS_Store
+Thumbs.db
+*.log

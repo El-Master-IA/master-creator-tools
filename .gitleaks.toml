@@ -1,0 +1,13 @@
+title = "mct gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Directorios generados"
+paths = [
+	'''(^|/)node_modules/''',
+	'''(^|/)dist/''',
+	'''(^|/)\.mct/''',
+	'''(^|/)\.vitest/''',
+]

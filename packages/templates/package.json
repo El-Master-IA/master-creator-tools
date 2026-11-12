@@ -1,0 +1,14 @@
+{
+	"name": "@mct/templates",
+	"version": "0.0.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"exports": {
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@mct/contract": "workspace:*",
+		"eta": "4.6.0"
+	}
+}

@@ -1,0 +1,21 @@
+{
+	"name": "@mct/core",
+	"version": "0.0.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"exports": {
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@mct/adapter-n8n": "workspace:*",
+		"@mct/adapter-node": "workspace:*",
+		"@mct/contract": "workspace:*",
+		"@mct/licenses": "workspace:*",
+		"@mct/scanner": "workspace:*",
+		"@mct/templates": "workspace:*",
+		"@octokit/rest": "22.0.1",
+		"fast-glob": "3.3.3",
+		"ignore": "7.0.14"
+	}
+}
