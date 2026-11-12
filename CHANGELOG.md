@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and sem
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-12
+
+### Fixed / Corregido
+
+- `doctor`: con `verify.remoto` que responde, Docker local ausente o apagado es aviso y no el siguiente paso / with a reachable `verify.remoto`, a missing or stopped local Docker is a warning, not the next step (CLI-007).
+
 ## [0.1.1] - 2026-11-11
 
 ### Changed / Cambiado

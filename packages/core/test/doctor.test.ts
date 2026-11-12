@@ -214,9 +214,10 @@ describe("CLI-007 doctor", () => {
 		expect(calls.some((x) => x.file.endsWith("ssh"))).toBe(false);
 	});
 
-	it("CLI-007 sin Docker en el PATH es falla con accion", async () => {
+	it("CLI-007 sin Docker en el PATH ni remoto es falla con accion", async () => {
 		const r = await runDoctor(
 			opts({
+				remoto: undefined,
 				resolveExe: async (n) => (n === "docker" ? null : `/usr/bin/${n}`),
 			}),
 		);
@@ -225,9 +226,37 @@ describe("CLI-007 doctor", () => {
 		expect(d?.accion).toBeTruthy();
 	});
 
-	it("CLI-007 Docker instalado con el servicio caido es falla", async () => {
-		const r = await runDoctor(opts({ run: fakeRun({ docker: 1 }) }));
+	it("CLI-007 Docker instalado con el servicio caido y sin remoto es falla", async () => {
+		const r = await runDoctor(
+			opts({ remoto: undefined, run: fakeRun({ docker: 1 }) }),
+		);
 		expect(r.checks.find((c) => c.id === "docker")?.estado).toBe("falla");
+	});
+
+	it("CLI-007 con verify.remoto que responde, Docker local caido es aviso sin accion y no es el siguiente paso", async () => {
+		const r = await runDoctor(opts({ run: fakeRun({ docker: 1 }) }));
+		const d = r.checks.find((c) => c.id === "docker");
+		expect(d?.estado).toBe("aviso");
+		expect(d?.accion).toBeUndefined();
+		expect(d?.mensaje).toContain("servidor-casa");
+		expect(r.siguiente).not.toMatch(/Docker/);
+	});
+
+	it("CLI-007 con verify.remoto que responde, Docker ausente del PATH es aviso", async () => {
+		const r = await runDoctor(
+			opts({
+				resolveExe: async (n) => (n === "docker" ? null : `/usr/bin/${n}`),
+			}),
+		);
+		expect(r.checks.find((c) => c.id === "docker")?.estado).toBe("aviso");
+	});
+
+	it("CLI-007 si el remoto no responde, Docker local caido sigue siendo falla", async () => {
+		const r = await runDoctor(
+			opts({ run: fakeRun({ docker: 1, ssh: "timeout" }) }),
+		);
+		expect(r.checks.find((c) => c.id === "docker")?.estado).toBe("falla");
+		expect(r.siguiente).toMatch(/Docker/);
 	});
 
 	it("CLI-007 un chequeo que lanza algo inesperado es falla, nunca ok", async () => {

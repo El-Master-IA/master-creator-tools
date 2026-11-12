@@ -110,6 +110,7 @@ const T = {
 		dockerAccion: "Inicia Docker o instálalo; verify puede usar verify.remoto",
 		sshNo: "sin remoto: verify.remoto no está configurado",
 		sshOk: (a: string) => `SSH a ${a} responde`,
+		dockerRemoto: (a: string) => ` (no hace falta: verify usará ${a})`,
 		sshBad: (a: string) => `verify.remoto «${a}» no es un alias SSH válido`,
 		sshFail: (a: string) => `SSH a ${a} no responde`,
 		sshNoBin: "No encuentro ssh en el PATH",
@@ -140,6 +141,7 @@ const T = {
 		dockerAccion: "Start or install Docker; verify can use verify.remoto",
 		sshNo: "no remote: verify.remoto is not configured",
 		sshOk: (a: string) => `SSH to ${a} responds`,
+		dockerRemoto: (a: string) => ` (not needed: verify will use ${a})`,
 		sshBad: (a: string) => `verify.remoto «${a}» is not a valid SSH alias`,
 		sshFail: (a: string) => `SSH to ${a} does not respond`,
 		sshNoBin: "ssh not found on PATH",
@@ -447,5 +449,22 @@ export async function runDoctor(
 			checkPerms(home, lang, env, options.perms ?? {}),
 		),
 	];
+	// CLI-007: with a reachable verify.remoto, a missing or stopped local Docker does
+	// not block verify, so it is a warning and not a next step.
+	const ssh = checks.find((c) => c.id === "ssh");
+	const docker = checks.findIndex((c) => c.id === "docker");
+	const dockerCheck = checks[docker];
+	if (
+		ssh?.estado === "ok" &&
+		options.remoto !== undefined &&
+		dockerCheck !== undefined &&
+		dockerCheck.estado === "falla"
+	) {
+		checks[docker] = {
+			id: "docker",
+			estado: "aviso",
+			mensaje: dockerCheck.mensaje + T[lang].dockerRemoto(options.remoto),
+		};
+	}
 	return { checks, siguiente: nextCommand(lang, checks) };
 }
