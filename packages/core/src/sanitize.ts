@@ -1236,6 +1236,11 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 		etapas: {
 			...state.etapas,
 			sanitize: { estado: abiertos === 0 ? "ok" : "bloqueada", ts },
+			// SAN-010: scan's gate closed only for open findings; once none remain it passes too.
+			...(abiertos === 0 &&
+				state.etapas.scan.estado === "bloqueada" && {
+					scan: { estado: "ok" as const, ts },
+				}),
 		},
 	};
 	await writeFileAtomic(

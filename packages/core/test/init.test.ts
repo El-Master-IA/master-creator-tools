@@ -312,6 +312,7 @@ describe("CLI-006 y SEC-001 avisos de T41", () => {
 	});
 
 	it("SEC-001 sin diccionario no hay avisos", async () => {
+		await put(dest, "mct.config.json", "{}\n");
 		const r = await initFromSource(opts());
 		expect(r.avisos).toEqual([]);
 	});
@@ -329,4 +330,41 @@ describe("CLI-006 y SEC-001 avisos de T41", () => {
 			expect(r.avisos[0]?.accion).toContain("chmod 600");
 		},
 	);
+});
+
+describe("CFG-002 config del origen cuando el destino no tiene", () => {
+	it("CFG-002 usa los exclude del mct.config.json del origen y lo copia al destino", async () => {
+		const cfg = JSON.stringify({ exclude: ["src/app.log"] });
+		await put(origen, "mct.config.json", cfg);
+		const antes = await hashTree(origen);
+		const r = await initFromSource(opts());
+		expect(await list(r.workspace.work)).not.toContain("src/app.log");
+		expect(
+			JSON.parse(await readFile(join(dest, "mct.config.json"), "utf8")),
+		).toEqual(JSON.parse(cfg));
+		expect(r.avisos.some((a) => a.mensaje.includes("mct.config.json"))).toBe(
+			true,
+		);
+		expect(await hashTree(origen)).toBe(antes);
+	});
+
+	it("CFG-002 si el destino ya tiene config, manda la del destino y no la pisa", async () => {
+		await put(
+			origen,
+			"mct.config.json",
+			JSON.stringify({ exclude: ["src/app.log"] }),
+		);
+		await put(dest, "mct.config.json", "{}\n");
+		const r = await initFromSource(opts());
+		expect(await list(r.workspace.work)).toContain("src/app.log");
+		expect(await readFile(join(dest, "mct.config.json"), "utf8")).toBe("{}\n");
+	});
+
+	it("CFG-002 una config inválida en el origen falla con VALIDACION sin copiar nada", async () => {
+		await put(origen, "mct.config.json", "{ no json");
+		const err = await initFromSource(opts()).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(MctError);
+		expect((err as MctError).codigo).toBe("VALIDACION");
+		await expect(lstat(join(dest, "mct.config.json"))).rejects.toThrow();
+	});
 });

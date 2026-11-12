@@ -165,6 +165,9 @@ const TEXT = {
 		motivoMal: "El motivo debe tener al menos 10 caracteres.",
 		auto: (n: number) =>
 			`Se aplicarán ${n} reemplazos sugeridos. ¿Confirmas el resumen?`,
+		lote: (regla: string, dir: string) =>
+			`¿Usar la misma decisión y motivo para los demás hallazgos ${regla} en ${dir}/?`,
+		enLote: "↳ misma decisión que el anterior (lote confirmado)",
 	},
 	en: {
 		initDesc: "copy the source into a working workspace",
@@ -207,6 +210,9 @@ const TEXT = {
 		motivoMal: "The reason must have at least 10 characters.",
 		auto: (n: number) =>
 			`${n} suggested replacements will be applied. Do you confirm the summary?`,
+		lote: (regla: string, dir: string) =>
+			`Use the same decision and reason for the other ${regla} findings in ${dir}/?`,
+		enLote: "↳ same decision as before (batch confirmed)",
 	},
 } as const;
 
@@ -357,11 +363,22 @@ function interrumpido(lang: Lang): MctError {
 
 const ABORTAR: Decision = { accion: "abortar" };
 
+/** SAN-011: a batch only spans one rule in one folder, and only after an explicit yes. */
+function loteKey(h: Finding): string {
+	return JSON.stringify([h.regla, dirname(h.archivo)]);
+}
+
 function makeDecisor(ctx: CliContext): Decisor {
 	const t = TEXT[ctx.lang];
+	const lotes = new Map<string, Decision>();
 	return {
 		async decidir(hallazgo, dc) {
 			ctx.info(t.hallazgo(hallazgo));
+			const enLote = lotes.get(loteKey(hallazgo));
+			if (enLote !== undefined) {
+				ctx.info(t.enLote);
+				return enLote;
+			}
 			const options: SelectOption<
 				"reemplazar" | "falso-positivo" | "aceptar" | "abortar"
 			>[] = [];
@@ -390,7 +407,14 @@ function makeDecisor(ctx: CliContext): Decisor {
 			}
 			const motivo = await askMotivo(ctx, t);
 			if (motivo === null) throw interrumpido(ctx.lang);
-			return { accion: eleccion, motivo };
+			const decision: Decision = { accion: eleccion, motivo };
+			const lote = await deps.prompter.confirm({
+				message: t.lote(hallazgo.regla, dirname(hallazgo.archivo)),
+				initialValue: false,
+			});
+			if (lote === null) throw interrumpido(ctx.lang);
+			if (lote === true) lotes.set(loteKey(hallazgo), decision);
+			return decision;
 		},
 		async confirmar(resumen) {
 			const answer = await deps.prompter.confirm({
@@ -484,7 +508,11 @@ export function register(program: Command): void {
 						confianza: result.confianza,
 						archivos: result.archivos,
 					},
-					t.initOk(result.adapter, result.confianza, result.archivos),
+					t.initOk(
+						result.adapter,
+						Math.round(result.confianza * 100) / 100,
+						result.archivos,
+					),
 				);
 			},
 		);

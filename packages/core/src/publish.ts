@@ -143,6 +143,8 @@ export interface PublishOptions {
 	gitleaks?: Partial<ScanGitleaksOptions>;
 	env?: Record<string, string | undefined>;
 	now?: () => string;
+	/** Wait used between retries after a 404 right after going public (PUB-012); tests pass a fake. */
+	esperar?: (ms: number) => Promise<void>;
 }
 
 export interface PublishResult {
@@ -577,6 +579,31 @@ function repoInfo(data: unknown, m: (typeof MSG)[PublishLang]): RepoInfo {
 	return { id: data.id, private: data.private };
 }
 
+/** Waits before each retry of a write that GitHub answers with 404 right after visibility changes. */
+const REINTENTOS_404_MS = [2000, 4000, 8000, 16000] as const;
+
+/**
+ * PUB-012: GitHub can answer 404 to release/topics for some seconds after a repo
+ * turns public. Retries only 404, with backoff; any other error, or the last 404, propagates.
+ */
+async function con404Reintento<T>(
+	fn: () => Promise<T>,
+	esperar: (ms: number) => Promise<void>,
+): Promise<T> {
+	for (const ms of REINTENTOS_404_MS) {
+		try {
+			return await fn();
+		} catch (e) {
+			if (estadoDe(e) !== 404) throw e;
+			await esperar(ms);
+		}
+	}
+	return fn();
+}
+
+const esperaReal = (ms: number): Promise<void> =>
+	new Promise((r) => setTimeout(r, ms));
+
 function estadoDe(e: unknown): number | undefined {
 	if (e instanceof MctError && e.codigo === "INTERNO") {
 		const s = e.detalle?.estado;
@@ -906,17 +933,22 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
 				}
 			});
 
+			const esperar = opts.esperar ?? esperaReal;
 			await step("release", async () => {
 				try {
-					await client.request("POST /repos/{owner}/{repo}/releases", {
-						owner,
-						repo: name,
-						tag_name: RELEASE_TAG,
-						name: RELEASE_TAG,
-						body: m.release,
-						draft: false,
-						prerelease: false,
-					});
+					await con404Reintento(
+						() =>
+							client.request("POST /repos/{owner}/{repo}/releases", {
+								owner,
+								repo: name,
+								tag_name: RELEASE_TAG,
+								name: RELEASE_TAG,
+								body: m.release,
+								draft: false,
+								prerelease: false,
+							}),
+						esperar,
+					);
 				} catch (e) {
 					if (estadoDe(e) !== 422) throw e;
 					await client.request(
@@ -931,11 +963,15 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
 			});
 
 			await step("topics", async () => {
-				await client.request("PUT /repos/{owner}/{repo}/topics", {
-					owner,
-					repo: name,
-					names: topics,
-				});
+				await con404Reintento(
+					() =>
+						client.request("PUT /repos/{owner}/{repo}/topics", {
+							owner,
+							repo: name,
+							names: topics,
+						}),
+					esperar,
+				);
 			});
 
 			// SAN-005: the quarantine goes away when publish ends.

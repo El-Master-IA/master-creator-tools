@@ -31,7 +31,7 @@ import {
 	looksLikeUrl,
 	parseGithubUrl,
 } from "./clone.js";
-import { loadConfig } from "./config.js";
+import { CONFIG_FILE, loadConfig } from "./config.js";
 import { hashTree } from "./hash.js";
 import {
 	checkDictionaryPerms,
@@ -130,6 +130,8 @@ const MSG = {
 		accionForce: "Corre mct init --force en una terminal y confirma.",
 		wsEnlace: "El workspace del destino es un enlace o no es una carpeta.",
 		dentroWs: "El origen está dentro del workspace de destino.",
+		configCopiada:
+			"Se copió mct.config.json del origen al destino; desde ahora las etapas leen esa copia.",
 		destDentro:
 			"El destino es el origen o está dentro de él: init escribiría .mct/ y .gitignore en el origen.",
 		accionDestDentro: "Usa --dest <carpeta fuera del origen>.",
@@ -182,6 +184,8 @@ const MSG = {
 		accionForce: "Run mct init --force in a terminal and confirm.",
 		wsEnlace: "The destination workspace is a link or not a folder.",
 		dentroWs: "The source is inside the destination workspace.",
+		configCopiada:
+			"mct.config.json was copied from the source to the destination; every stage now reads that copy.",
 		destDentro:
 			"The destination is the source or inside the source: init would write .mct/ and .gitignore into the source.",
 		accionDestDentro: "Use --dest <folder outside the source>.",
@@ -532,6 +536,14 @@ async function inspectOrigin(
 	throw fail("VALIDACION", m.noCarpetaNiJson);
 }
 
+/** True when something (file, folder or link) is at `p`. */
+async function exists(p: string): Promise<boolean> {
+	return lstat(p).then(
+		() => true,
+		() => false,
+	);
+}
+
 async function realOrNull(p: string): Promise<string | null> {
 	try {
 		return await realpath(p);
@@ -761,7 +773,14 @@ async function initCore(
 	}
 
 	// Config: invalid file or glob -> VALIDACION before touching anything.
-	const config = await loadConfig(dest);
+	// CFG-002: with no config at dest, a folder source's root config is used and copied on success.
+	// Never for a cloned GitHub source: a third party must not set licenses.allow or verify.
+	const configOrigen =
+		remoteUrl === undefined &&
+		origin.dir &&
+		!(await exists(join(dest, CONFIG_FILE))) &&
+		(await exists(join(origin.abs, CONFIG_FILE)));
+	const config = await loadConfig(configOrigen ? origin.abs : dest);
 	const globs = expandExclude(config.exclude ?? [], m);
 	const ig = ignore().add(globs);
 	const excluded = (rel: string, dir: boolean): boolean =>
@@ -911,6 +930,15 @@ async function initCore(
 			} else {
 				avisos.push({ mensaje: m.previoQueda, accion: m.accionPrevio });
 			}
+		}
+		if (configOrigen) {
+			// The validated object, not a second read of the path (no TOCTOU); "wx" never overwrites.
+			await writeFile(
+				join(dest, CONFIG_FILE),
+				`${JSON.stringify(config, null, "\t")}\n`,
+				{ flag: "wx" },
+			);
+			avisos.push({ mensaje: m.configCopiada });
 		}
 		return {
 			workspace: ws,

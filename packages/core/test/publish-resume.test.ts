@@ -456,3 +456,65 @@ contrato de ${TERM}
 		expect(seen).not.toContain("push");
 	});
 });
+
+describe("PUB-012 reintento ante 404 justo después de hacer público el repo", () => {
+	it("PUB-012 un 404 pasajero en release y topics se reintenta con espera y termina ok", async () => {
+		await build();
+		await put(savedState({ escaneoRemoto: "ok", publico: "ok", tag: "ok" }));
+		const base = fakeClient({ id: 4242, private: false });
+		const fallos: Record<string, number> = {
+			"POST /repos/{owner}/{repo}/releases": 2,
+			"PUT /repos/{owner}/{repo}/topics": 1,
+		};
+		const client: GithubClient = {
+			...base,
+			request: async (route, params) => {
+				if ((fallos[route] ?? 0) > 0) {
+					fallos[route] = (fallos[route] ?? 0) - 1;
+					calls.push(route);
+					throw new MctError("INTERNO", "no", { detalle: { estado: 404 } });
+				}
+				return base.request(route, params);
+			},
+		};
+		const esperas: number[] = [];
+		const res = await publish(
+			opts(client, {
+				resume: true,
+				esperar: async (ms) => {
+					esperas.push(ms);
+				},
+			}),
+		);
+		expect(res.visibilidad).toBe("publico");
+		expect(esperas).toEqual([2000, 4000, 2000]);
+		const saved = JSON.parse(
+			await readFile(join(raiz, "publish-state.json"), "utf8"),
+		) as PublishStateFile;
+		expect(saved.pasos.release).toBe("ok");
+		expect(saved.pasos.topics).toBe("ok");
+	});
+
+	it("PUB-012 un 404 que no se va termina en error sin marcar el release", async () => {
+		await build();
+		await put(savedState({ escaneoRemoto: "ok", publico: "ok", tag: "ok" }));
+		const base = fakeClient({ id: 4242, private: false });
+		const client: GithubClient = {
+			...base,
+			request: async (route, params) => {
+				if (route === "POST /repos/{owner}/{repo}/releases") {
+					throw new MctError("INTERNO", "no", { detalle: { estado: 404 } });
+				}
+				return base.request(route, params);
+			},
+		};
+		const err = await errOf(
+			publish(opts(client, { resume: true, esperar: async () => undefined })),
+		);
+		expect(err.codigo).toBe("INTERNO");
+		const saved = JSON.parse(
+			await readFile(join(raiz, "publish-state.json"), "utf8"),
+		) as PublishStateFile;
+		expect(saved.pasos.release).not.toBe("ok");
+	});
+});

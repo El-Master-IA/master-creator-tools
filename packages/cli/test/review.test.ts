@@ -170,6 +170,16 @@ describe("Ctrl+C en init", () => {
 	});
 });
 
+describe("CLI-001 salida de init", () => {
+	it("CLI-001 muestra la confianza del adaptador con dos decimales como máximo", async () => {
+		useScript({ selects: [], texts: [], asked: [] });
+		const { io, out, err } = makeIo(false);
+		expect(await runCli(["init", origen, "--dest", dest], io)).toBe(0);
+		const texto = out.join("") + err.join("");
+		expect(texto).toMatch(/confianza \d+(\.\d{1,2})?\)/);
+	});
+});
+
 describe("SAN-002 revision interactiva", () => {
 	it("SAN-002 CUANDO se corre init, scan y sanitize sobre un fixture EL SISTEMA DEBE terminar con approval.json firmado", async () => {
 		await initAndScan();
@@ -195,10 +205,33 @@ describe("SAN-002 revision interactiva", () => {
 		const { io, err } = makeIo(true);
 		const code = await runCli(["sanitize", "--workspace", ws()], io);
 		expect(code).toBe(0);
-		// select + 3 text prompts: the two short reasons were rejected and asked again
-		expect(script.asked).toHaveLength(4);
+		// select + 3 text prompts (two short reasons asked again) + the batch question
+		expect(script.asked).toHaveLength(5);
 		expect(script.texts).toHaveLength(0);
 		expect(err.join("")).toContain("10");
+		await access(join(ws(), "approval.json"));
+	});
+
+	it("SAN-011 CUANDO se confirma el lote EL SISTEMA DEBE aplicar la misma decisión a los hallazgos de la misma regla y carpeta", async () => {
+		await writeFile(
+			join(origen, "src", "otro.js"),
+			`const token = "${TOKEN}";
+module.exports = token;
+`,
+		);
+		await initAndScan();
+		const script: Script = {
+			selects: ["falso-positivo"],
+			texts: ["es un valor de prueba del fixture"],
+			asked: [],
+		};
+		useScript(script);
+		const { io, err } = makeIo(true);
+		const code = await runCli(["sanitize", "--workspace", ws()], io);
+		expect(code).toBe(0);
+		// one select, one reason and one batch question cover both findings
+		expect(script.asked).toHaveLength(3);
+		expect(err.join("")).toContain("lote confirmado");
 		await access(join(ws(), "approval.json"));
 	});
 

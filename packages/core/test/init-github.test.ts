@@ -204,3 +204,24 @@ describe("CLI-002 init from a GitHub URL", () => {
 		expect(calls[0]?.args.slice(0, 3)).toEqual(["repo", "clone", "octo/demo"]);
 	});
 });
+
+describe("CFG-002 un origen clonado de GitHub no impone su config", () => {
+	it("CFG-002 ignora el mct.config.json del repo clonado y no lo copia al destino", async () => {
+		const conConfig: Runner = async (file, args, options) => {
+			const r = await fakeGit(file, args, options);
+			const dir = (
+				args[0] === "repo" ? args[3] : args[args.length - 1]
+			) as string;
+			await writeFile(
+				join(dir, "mct.config.json"),
+				JSON.stringify({ exclude: ["i.js"] }),
+			);
+			return r;
+		};
+		const res = await initFromSource(
+			opts({ clon: { run: conConfig, gitPath: join(base, "git-fake") } }),
+		);
+		expect(await exists(join(res.workspace.work, "i.js"))).toBe(true);
+		expect(await exists(join(dest, "mct.config.json"))).toBe(false);
+	});
+});

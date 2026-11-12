@@ -24,7 +24,7 @@ import {
 	type SanitizeOptions,
 	sanitize,
 } from "../src/sanitize.js";
-import { createWorkspace, readState } from "../src/workspace.js";
+import { createWorkspace, readState, updateState } from "../src/workspace.js";
 
 const T0 = "2026-11-08T00:00:00.000Z";
 // Synthetic values built from fragments (T05): no literal secret lives here.
@@ -644,6 +644,26 @@ describe("sanitize · estado y puerta", () => {
 		expect(st.etapas.licenses.estado).toBe("pendiente");
 		await expect(stat(join(raiz, "report.html"))).resolves.toBeTruthy();
 		await expect(stat(join(raiz, "lock"))).rejects.toThrow();
+	});
+
+	it("SAN-010 sin abiertos al terminar, la puerta de scan bloqueada pasa a ok", async () => {
+		const text = `x="${SECRET}"
+`;
+		await put(work, "a.ts", text);
+		await writeFindings([mkFinding("a.ts", text, SECRET)]);
+		await updateState(raiz, (s) => ({
+			...s,
+			etapas: {
+				...s.etapas,
+				scan: { estado: "bloqueada", ts: s.etapas.scan.ts },
+			},
+		}));
+		await sanitize(
+			opts({ decisor: decisor(() => ({ accion: "reemplazar" })) }),
+		);
+		const st = await readState(raiz);
+		expect(st.etapas.sanitize.estado).toBe("ok");
+		expect(st.etapas.scan.estado).toBe("ok");
 	});
 
 	it("SAN-003 si el re-scan sigue trayendo abiertos tras 3 rondas sale con PUERTA_BLOQUEADA", async () => {
