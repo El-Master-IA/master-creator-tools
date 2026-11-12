@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { reconcileFindings } from "../../core/src/workspace.js";
 import type { Runner } from "../src/gitleaks.js";
 import { scan } from "../src/scan.js";
+import { CLAVE_PRUEBA } from "./clave.js";
 import { buildFixture } from "./fixtures/build.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -112,10 +113,12 @@ describe("IDs estables y decisiones", () => {
 		for (const f of a.hallazgos) expect(f.id).toMatch(/^[0-9a-f]{64}$/);
 	});
 
-	it("SCAN-009 el mismo contenido en otra raíz produce los mismos IDs", async () => {
+	it("SCAN-015 el mismo contenido en otro workspace (otra clave) produce IDs distintos", async () => {
 		const a = await run(await fixture("node"));
 		const b = await run(await fixture("node"));
-		expect(b.hallazgos.map((f) => f.id)).toEqual(a.hallazgos.map((f) => f.id));
+		expect(b.hallazgos).toHaveLength(a.hallazgos.length);
+		const idsA = new Set(a.hallazgos.map((f) => f.id));
+		expect(b.hallazgos.some((f) => idsA.has(f.id))).toBe(false);
 	});
 
 	it("SCAN-009 un re-scan conserva las decisiones previas", async () => {
@@ -217,6 +220,7 @@ describe("ID de gitleaks atado al secreto real (gitleaks 8.30.1)", () => {
 		await mkdir(work, { recursive: true });
 		const lines = ["# cabecera", "uno = dos", "tres = cuatro", "# fin"];
 		lines[lineIndex] = `clave = "${secret}" # nota`;
+		await writeFile(join(base, "clave"), CLAVE_PRUEBA);
 		await writeFile(join(work, "cfg.txt"), `${lines.join("\n")}\n`);
 		return {
 			work,
@@ -261,7 +265,7 @@ describe("ID de gitleaks atado al secreto real (gitleaks 8.30.1)", () => {
 			},
 		];
 		const again = await run(await treeWithSecret(make("B", "x"), 2), previos);
-		const fresh = gl(again)[0];
+		const fresh = gl(again).find((f) => f.estado !== "obsoleto");
 		expect(fresh?.id).not.toBe(old.id);
 		expect(fresh?.estado).toBe("abierto");
 		expect(again.hallazgos.find((f) => f.id === old.id)?.estado).toBe(
@@ -269,7 +273,7 @@ describe("ID de gitleaks atado al secreto real (gitleaks 8.30.1)", () => {
 		);
 	});
 
-	it("SCAN-009 el mismo secreto en otra raíz conserva el ID", async () => {
+	it("SCAN-009 el mismo secreto en otra raíz con la misma clave conserva el ID", async () => {
 		const a = gl(await run(await treeWithSecret(make("A", "x"), 2)))[0];
 		const b = gl(await run(await treeWithSecret(make("A", "x"), 2)))[0];
 		expect(b?.id).toBe(a?.id);

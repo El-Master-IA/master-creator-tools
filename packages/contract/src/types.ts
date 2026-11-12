@@ -26,6 +26,7 @@ export interface State {
 	adapter: string;
 	workSha256: string;
 	distSha256: string;
+	/** destino: "local", an SSH alias or "(omitido)". */
 	verificado: { distSha256: string; destino: string; ts: string } | null;
 	etapas: Record<Etapa, { estado: EstadoEtapa; ts: string }>;
 }
@@ -43,7 +44,9 @@ export interface Analysis {
 	entrypoints: string[];
 	envVars: { nombre: string; obligatoria: boolean }[];
 	deps: { nombre: string; version: string }[];
-	gestor?: "npm" | "pnpm" | "yarn";
+	gestor?: "npm" | "pnpm" | "yarn" | "uv" | "pip" | "poetry";
+	lenguaje?: string;
+	requiresPython?: string;
 	comandos: { install?: string; start?: string; build?: string };
 	puerto?: number;
 }
@@ -59,14 +62,30 @@ export type Change =
 	| { tipo: "crear"; ruta: string; contenido: string }
 	| { tipo: "borrar"; ruta: string };
 
+/** A step allowed to exit non-zero: it emits avisoSiFalla instead of blocking. */
+export interface VerifyStep {
+	argv: string[];
+	avisoSiFalla: string;
+}
+
 export interface VerifySpec {
 	imagen: string;
 	install?: string[];
-	start: string[];
+	/** One argv, or a sequence (each step runs in order with --network none). */
+	start: string[] | Array<string[] | VerifyStep>;
 	healthcheck:
 		| { tipo: "salida-cero" }
-		| { tipo: "http"; puerto: number }
+		| {
+				tipo: "http";
+				puerto: number;
+				ruta?: string;
+				aceptar?: Array<number | "2xx" | "3xx" | "4xx" | "5xx">;
+				cuerpoContiene?: string;
+				rutasExtra?: string[];
+		  }
 		| { tipo: "n8n-import" };
+	/** Fixed warning keys shown by verify (e.g. verify.pipCheck). */
+	avisos?: string[];
 	timeoutMin: number;
 }
 
@@ -85,7 +104,7 @@ export interface Adapter {
 	sanitize?(ws: Workspace): Promise<Change[]>;
 	generalize?(ws: Workspace): Promise<Change[]>;
 	packageHints(a: Analysis): PackageHints;
-	verifyCommand(a: Analysis): VerifySpec;
+	verifyCommand(a: Analysis): VerifySpec | null;
 }
 
 export type EstadoHallazgo =
@@ -110,6 +129,7 @@ export interface Finding {
 	severidad: Severidad;
 	estado: EstadoHallazgo;
 	motivo?: string;
+	via?: "tty" | "archivo" | "auto-fixtures";
 	decidio?: string;
 	decididoEn?: string;
 }

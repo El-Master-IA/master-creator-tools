@@ -50,7 +50,7 @@ describe("RUN-001 registro de comandos", () => {
 		const { io, out } = makeIo();
 		await runCli(["run", "--help"], io);
 		const text = out.join("");
-		expect(text).not.toMatch(/decis/i);
+		expect(text).not.toMatch(/decisor/i);
 		expect(text).toContain("--repo");
 		expect(text).toContain("--dry-run");
 	});

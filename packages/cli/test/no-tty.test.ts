@@ -116,6 +116,41 @@ describe("SAN-004 sin terminal", () => {
 		expect(err.join("")).toContain("interactive terminal");
 	});
 
+	it("SAN-004 CUANDO no hay TTY y quedan abiertos EL SISTEMA DEBE dar abiertos (numero) y hallazgosAbiertos y explicar las vias no interactivas", async () => {
+		const ws = join(dest, ".mct");
+		await runCli(["init", origen, "--dest", dest], makeIo(false).io);
+		await runCli(["scan", "--workspace", ws], makeIo(false).io);
+		const { io, out, err } = makeIo(false);
+		expect(await runCli(["--json", "sanitize", "--workspace", ws], io)).toBe(
+			10,
+		);
+		const body = JSON.parse(out.join("")) as {
+			error: {
+				detalle: { abiertos: number; hallazgosAbiertos: { archivo: string }[] };
+			};
+		};
+		expect(typeof body.error.detalle.abiertos).toBe("number");
+		expect(body.error.detalle.hallazgosAbiertos).toHaveLength(
+			body.error.detalle.abiertos,
+		);
+		expect(err.join("")).toContain("--decisiones");
+		expect(err.join("")).toContain("--auto-fixtures");
+		expect(asked).toBe(0);
+		await expect(access(join(ws, "approval.json"))).rejects.toThrow();
+	});
+
+	it("SAN-004 CUANDO no hay TTY y no hay hallazgos EL SISTEMA DEBE firmar la aprobacion sin preguntar", async () => {
+		await writeFile(join(origen, "src", "index.js"), "module.exports = 1;\n");
+		const ws = join(dest, ".mct");
+		await runCli(["init", origen, "--dest", dest], makeIo(false).io);
+		expect(await runCli(["scan", "--workspace", ws], makeIo(false).io)).toBe(0);
+		expect(
+			await runCli(["sanitize", "--workspace", ws], makeIo(false).io),
+		).toBe(0);
+		await access(join(ws, "approval.json"));
+		expect(asked).toBe(0);
+	});
+
 	it("CLI-008 CUANDO init --force corre sin TTY EL SISTEMA DEBE salir con CANCELADO sin tocar el workspace", async () => {
 		const ws = join(dest, ".mct");
 		expect(

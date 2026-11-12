@@ -4,8 +4,18 @@ import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { MctError } from "@mct/contract/errors";
 import { afterEach, describe, expect, it } from "vitest";
-import { scanBinaries } from "../src/binary.js";
+import {
+	type ScanBinariesOptions,
+	scanBinaries as scanBinariesConClave,
+} from "../src/binary.js";
 import { stripMetadata } from "../src/strip-metadata.js";
+import { CLAVE_PRUEBA } from "./clave.js";
+
+const scanBinaries = (
+	root: string,
+	files: readonly string[],
+	options: Partial<ScanBinariesOptions> = {},
+) => scanBinariesConClave(root, files, { clave: CLAVE_PRUEBA, ...options });
 
 const dirs: string[] = [];
 

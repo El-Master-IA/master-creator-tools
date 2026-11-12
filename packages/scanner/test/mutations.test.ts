@@ -11,7 +11,12 @@ import { dirname, join } from "node:path";
 import type { Rule } from "@mct/contract/types";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Runner } from "../src/gitleaks.js";
-import { scan } from "../src/scan.js";
+import { type ScanOptions, scan as scanConClave } from "../src/scan.js";
+import { CLAVE_PRUEBA } from "./clave.js";
+
+const scan = (options: ScanOptions) =>
+	scanConClave({ clave: CLAVE_PRUEBA, ...options });
+
 import { buildFixture } from "./fixtures/build.js";
 
 const cleanups: (() => Promise<void>)[] = [];

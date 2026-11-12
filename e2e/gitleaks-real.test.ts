@@ -9,6 +9,7 @@ import {
 	runGitleaks,
 } from "../packages/scanner/src/gitleaks.js";
 import { scan } from "../packages/scanner/src/scan.js";
+import { CLAVE_PRUEBA } from "../packages/scanner/test/clave.js";
 import { dockerGitleaksRunner } from "./support/gitleaks-docker.js";
 
 // Real gitleaks 8.30.1 (official image on the Docker of DOCKER_HOST). No fallback:
@@ -191,6 +192,7 @@ describe("gitleaks 8.30.1 real", () => {
 		const result = await scan({
 			work: target,
 			quarantine: join(base, "quarantine"),
+			clave: CLAVE_PRUEBA,
 			gitleaks: {
 				binary: BIN,
 				installDir: base,

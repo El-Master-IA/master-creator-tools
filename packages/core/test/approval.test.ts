@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Finding } from "@mct/contract/types";
-import { findingId } from "@mct/scanner/finding-id";
+import { findingId, leerClave } from "@mct/scanner/finding-id";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	invalidateApproval,
@@ -61,7 +61,10 @@ function hallazgo(
 }
 
 const idOf = (n: string) =>
-	findingId({ motor: "mct", regla: "r", archivo: n, linea: 1, value: n });
+	findingId(
+		{ motor: "mct", regla: "r", archivo: n, linea: 1, value: n },
+		CLAVE,
+	);
 
 function sign(hallazgos: Finding[]) {
 	return signApproval({
@@ -74,6 +77,8 @@ function sign(hallazgos: Finding[]) {
 	});
 }
 
+let CLAVE: Uint8Array;
+
 beforeEach(async () => {
 	base = await mkdtemp(join(tmpdir(), "mct-t19a-"));
 	raiz = join(base, ".mct");
@@ -83,6 +88,7 @@ beforeEach(async () => {
 		adapter: "node",
 		now: () => T0,
 	});
+	CLAVE = await leerClave(raiz);
 	work = join(raiz, "work");
 });
 
@@ -119,6 +125,8 @@ describe("approval · firma", () => {
 				"aprobadoEn",
 				"aprobadoPor",
 				"arbolSha256",
+				"autoFixturesSha256",
+				"decisionesSha256",
 				"gitleaksVersion",
 				"hallazgosDecididos",
 				"mctVersion",
@@ -274,7 +282,7 @@ describe("approval · sanitize y --reopen", () => {
 		await writeFile(
 			join(raiz, "findings.json"),
 			JSON.stringify({
-				schemaVersion: 1,
+				schemaVersion: 2,
 				mctVersion: "0.0.0",
 				gitleaksVersion: "8.30.1",
 				generadoEn: T0,
@@ -287,13 +295,16 @@ describe("approval · sanitize y --reopen", () => {
 	async function firmadoConFalsoPositivo() {
 		await put("a.ts", `x="${SECRET}"\n`);
 		const f = hallazgo(
-			findingId({
-				motor: "mct",
-				regla: "generic-token",
-				archivo: "a.ts",
-				linea: 1,
-				value: SECRET,
-			}),
+			findingId(
+				{
+					motor: "mct",
+					regla: "generic-token",
+					archivo: "a.ts",
+					linea: 1,
+					value: SECRET,
+				},
+				CLAVE,
+			),
 			"abierto",
 		);
 		await guardaFindings([f]);

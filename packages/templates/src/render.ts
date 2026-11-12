@@ -1,9 +1,14 @@
 import { MctError } from "@mct/contract/errors";
 import type { PackageHints } from "@mct/contract/types";
 import { Eta } from "eta";
+import { readmeConAdaptador } from "./readme.js";
 import { PLANTILLAS_COMUNIDAD } from "./repo-community.js";
 import { PLANTILLAS_DOCS } from "./repo-docs.js";
-import { PLANTILLAS_GITHUB } from "./repo-github.js";
+import {
+	type CiOpciones,
+	ciParaAdaptador,
+	PLANTILLAS_GITHUB,
+} from "./repo-github.js";
 
 export interface RepoInput {
 	hints: PackageHints;
@@ -13,6 +18,10 @@ export interface RepoInput {
 	nombre: string;
 	/** Copyright year. */
 	anio: number;
+	/** Adapter id; absent keeps the node CI and the plain README. */
+	adaptador?: string;
+	/** CI data from the Analysis (PKG-006). */
+	ci?: Omit<CiOpciones, "adaptador">;
 }
 
 export interface RepoFile {
@@ -132,7 +141,22 @@ export function renderRepo(input: RepoInput): RepoFile[] {
 	]) {
 		const lang =
 			p.ruta.includes("/es/") || p.ruta.endsWith(".es.md") ? "es" : "en";
-		out.push({ ruta: p.ruta, contenido: render(lang, p.plantilla) });
+		if (p.ruta === ".github/workflows/ci.yml" && input.adaptador) {
+			// Built by code (no Eta): only static text plus pinned versions.
+			out.push({
+				ruta: p.ruta,
+				contenido: ciParaAdaptador({ ...input.ci, adaptador: input.adaptador }),
+			});
+			continue;
+		}
+		let contenido = render(lang, p.plantilla);
+		if (
+			input.adaptador &&
+			(p.ruta === "README.md" || p.ruta === "README.es.md")
+		) {
+			contenido = readmeConAdaptador(contenido, input.adaptador, lang);
+		}
+		out.push({ ruta: p.ruta, contenido });
 	}
 	return out;
 }

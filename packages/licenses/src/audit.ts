@@ -1019,7 +1019,7 @@ async function readPackageJson(
 
 // ---------- source (c): registry ----------
 
-async function readBody(
+export async function readBody(
 	res: Response,
 	maxBytes: number,
 ): Promise<string | undefined> {
@@ -1077,7 +1077,7 @@ async function readFromRegistry(
 	}
 }
 
-async function pool<T>(
+export async function pool<T>(
 	items: readonly T[],
 	limit: number,
 	fn: (item: T) => Promise<void>,

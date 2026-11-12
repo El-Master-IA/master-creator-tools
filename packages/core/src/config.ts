@@ -10,8 +10,16 @@ export interface MctConfig {
 	exclude?: string[];
 	licenses?: {
 		allow: { spdx: string; motivo: string; paquetes?: string[] }[];
+		sinLock?: { motivo: string };
+		gestorNoSoportado?: { motivo: string };
 	};
-	verify?: { remoto?: string; timeoutMin?: number };
+	verify?: {
+		remoto?: string;
+		timeoutMin?: number;
+		modo?: "compilar";
+		ignorar?: string[];
+		motivo?: string;
+	};
 }
 
 export const CONFIG_FILE = "mct.config.json";
@@ -19,6 +27,27 @@ export const CONFIG_FILE = "mct.config.json";
 const MAX_FILE_BYTES = 1_048_576;
 const MAX_EXCLUDE = 1000;
 const MAX_TEXT = 500;
+const MIN_MOTIVO = 10;
+const OMITIDO = "(omitido)";
+
+function motivo10(v: unknown, campo: string): string {
+	if (typeof v !== "string") throw bad(`${campo} debe ser texto`);
+	const t = v.trim();
+	if (
+		t.length < MIN_MOTIVO ||
+		t.length > MAX_TEXT ||
+		/[\p{Cc}\p{Cf}]/u.test(t)
+	) {
+		throw bad(`${campo} debe tener de 10 a 500 caracteres`);
+	}
+	return t;
+}
+
+function motivoObj(v: unknown, campo: string): { motivo: string } {
+	if (!isObj(v)) throw bad(`${campo} debe ser un objeto`);
+	onlyKeys(v, ["motivo"], campo);
+	return { motivo: motivo10(v.motivo, `${campo}.motivo`) };
+}
 
 function bad(mensaje: string, detalle?: Record<string, unknown>): MctError {
 	return new MctError("VALIDACION", `mct.config.json: ${mensaje}`, {
@@ -70,10 +99,13 @@ function parseExclude(v: unknown): string[] {
 
 function parseVerify(v: unknown): NonNullable<MctConfig["verify"]> {
 	if (!isObj(v)) throw bad("verify debe ser un objeto");
-	onlyKeys(v, ["remoto", "timeoutMin"], "verify");
+	onlyKeys(v, ["remoto", "timeoutMin", "modo", "ignorar", "motivo"], "verify");
 	const out: NonNullable<MctConfig["verify"]> = {};
 	if (v.remoto !== undefined) {
 		const alias = plainText(v.remoto, "verify.remoto");
+		if (alias === OMITIDO) {
+			throw bad('verify.remoto no puede ser "(omitido)"');
+		}
 		// SSH alias: never an option (no leading "-") and no spaces.
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(alias)) {
 			throw bad("verify.remoto debe ser un alias de ~/.ssh/config");
@@ -87,19 +119,49 @@ function parseVerify(v: unknown): NonNullable<MctConfig["verify"]> {
 		}
 		out.timeoutMin = t;
 	}
+	if (v.modo !== undefined) {
+		if (v.modo !== "compilar") throw bad('verify.modo solo admite "compilar"');
+		out.modo = "compilar";
+	}
+	if (v.ignorar !== undefined) {
+		out.ignorar = parseExclude(v.ignorar);
+	}
+	if (v.motivo !== undefined) out.motivo = motivo10(v.motivo, "verify.motivo");
+	if (
+		(out.modo !== undefined || out.ignorar !== undefined) &&
+		out.motivo === undefined
+	) {
+		throw bad("verify.modo y verify.ignorar exigen verify.motivo");
+	}
 	return out;
 }
 
 function parseLicenses(v: unknown): NonNullable<MctConfig["licenses"]> {
 	if (!isObj(v)) throw bad("licenses debe ser un objeto");
-	onlyKeys(v, ["allow"], "licenses");
+	onlyKeys(v, ["allow", "sinLock", "gestorNoSoportado"], "licenses");
+	const extra: Pick<
+		NonNullable<MctConfig["licenses"]>,
+		"sinLock" | "gestorNoSoportado"
+	> = {};
+	if (v.sinLock !== undefined) {
+		extra.sinLock = motivoObj(v.sinLock, "licenses.sinLock");
+	}
+	if (v.gestorNoSoportado !== undefined) {
+		extra.gestorNoSoportado = motivoObj(
+			v.gestorNoSoportado,
+			"licenses.gestorNoSoportado",
+		);
+	}
+	if (v.allow === undefined && Object.keys(extra).length > 0) {
+		return { allow: [], ...extra };
+	}
 	if (!Array.isArray(v.allow)) throw bad("licenses.allow debe ser una lista");
 	v.allow.forEach((entry, i) => {
 		if (isObj(entry))
 			onlyKeys(entry, ["spdx", "motivo", "paquetes"], `licenses.allow[${i}]`);
 	});
 	// Same rules as the licenses audit (LIC-003): SPDX id + motivo >= 5 visible chars.
-	return { allow: parseAllow({ licenses: v }) };
+	return { allow: parseAllow({ licenses: { allow: v.allow } }), ...extra };
 }
 
 /** Strict validation of an already parsed config. Throws VALIDACION. */

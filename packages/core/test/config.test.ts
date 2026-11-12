@@ -179,3 +179,51 @@ describe("CFG-001 mct.config.json", () => {
 		expect(JSON.stringify(e.toJSON())).not.toContain(secreto);
 	});
 });
+
+describe("CFG-001 campos de v0.2.0", () => {
+	it("CFG-001 acepta sinLock, gestorNoSoportado y verify.modo compilar", async () => {
+		const cfg = {
+			licenses: {
+				allow: [],
+				sinLock: { motivo: "sin lock a propósito" },
+				gestorNoSoportado: { motivo: "gestor no soportado aún" },
+			},
+			verify: {
+				modo: "compilar",
+				ignorar: ["tests/**"],
+				motivo: "el entrypoint necesita una base de datos",
+			},
+		};
+		await escribe(cfg);
+		expect(await loadConfig(dest)).toEqual(cfg);
+	});
+
+	it("CFG-001 rechaza motivos fuera de 10 a 500 caracteres", async () => {
+		const casos = [
+			{ licenses: { allow: [], sinLock: { motivo: "corto" } } },
+			{
+				licenses: { allow: [], gestorNoSoportado: { motivo: "x".repeat(501) } },
+			},
+			{ verify: { modo: "compilar", motivo: "corto" } },
+			{ verify: { modo: "otro", motivo: "motivo suficiente" } },
+		];
+		for (const c of casos) {
+			await escribe(c);
+			expect((await rechazo(loadConfig(dest))).codigo).toBe("VALIDACION");
+		}
+	});
+
+	it("CFG-001 modo o ignorar exigen verify.motivo", async () => {
+		await escribe({ verify: { ignorar: ["a/**"] } });
+		expect((await rechazo(loadConfig(dest))).codigo).toBe("VALIDACION");
+		await escribe({ verify: { modo: "compilar" } });
+		expect((await rechazo(loadConfig(dest))).codigo).toBe("VALIDACION");
+	});
+
+	it("CFG-001 verify.remoto (omitido) sale con VALIDACION", async () => {
+		await escribe({ verify: { remoto: "(omitido)" } });
+		const e = await rechazo(loadConfig(dest));
+		expect(e.codigo).toBe("VALIDACION");
+		expect(e.exit).toBe(2);
+	});
+});

@@ -260,7 +260,7 @@ describe("etapa scan", () => {
 		const f = JSON.parse(
 			await readFile(join(raiz, "findings.json"), "utf8"),
 		) as Record<string, unknown>;
-		expect(f.schemaVersion).toBe(1);
+		expect(f.schemaVersion).toBe(2);
 		expect(f.mctVersion).toBe("0.0.0");
 		expect(f.gitleaksVersion).toBe("8.30.1");
 		expect(f.generadoEn).toBe("2026-11-08T10:00:00.000Z");

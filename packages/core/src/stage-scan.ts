@@ -11,8 +11,7 @@ import {
 } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
-import { n8nAdapter } from "@mct/adapter-n8n/index";
-import { findRegistryIssues, nodeAdapter } from "@mct/adapter-node/index";
+import { findRegistryIssues } from "@mct/adapter-node/index";
 import { MctError } from "@mct/contract/errors";
 import type {
 	Adapter,
@@ -28,6 +27,7 @@ import type { ScanGitleaksOptions } from "@mct/scanner/scan";
 import { scan } from "@mct/scanner/scan";
 import { detectSecrets } from "@mct/scanner/secrets";
 import { renderReport } from "@mct/templates/report";
+import { ADAPTERS } from "./adapters.js";
 import { hashTree } from "./hash.js";
 import { defaultDictionaryPath, type Lang } from "./init-guards.js";
 import { createLogger } from "./logger.js";
@@ -40,7 +40,7 @@ import {
 	writeState,
 } from "./workspace.js";
 
-export const FINDINGS_SCHEMA_VERSION = 1;
+export const FINDINGS_SCHEMA_VERSION = 2;
 
 export interface StageScanOptions {
 	/** Home that holds `~/.mct/sensible.txt` and the pinned gitleaks. */
@@ -61,8 +61,6 @@ export interface StageScanResult {
 	analysis: Analysis;
 	gitleaksVersion: string;
 }
-
-const ADAPTERS: readonly Adapter[] = [nodeAdapter, n8nAdapter];
 
 function invalido(
 	mensaje: string,

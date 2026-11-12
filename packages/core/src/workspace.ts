@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
 	chmod,
 	lstat,
@@ -18,6 +19,7 @@ import type {
 	State,
 	Workspace,
 } from "@mct/contract/types";
+import { CLAVE_BYTES } from "@mct/scanner/finding-id";
 
 export const STATE_SCHEMA_VERSION = 1;
 
@@ -89,7 +91,14 @@ export function workspacePaths(raiz: string): Workspace {
 	};
 }
 
-/** Creates `.mct/` with 0700 dirs and a 0600 state.json. */
+/** Writes the 32-byte HMAC key of Finding.id (SCAN-015): 0600 / user-only ACL, never logged. */
+async function writeClave(raiz: string): Promise<void> {
+	const destino = join(raiz, "clave");
+	await writeFile(destino, randomBytes(CLAVE_BYTES), { mode: 0o600 });
+	await restrict(destino, false);
+}
+
+/** Creates `.mct/` with 0700 dirs, a 0600 state.json and the 0600 `clave` (SCAN-015). */
 export async function createWorkspace(
 	raiz: string,
 	init: InitOptions,
@@ -104,6 +113,7 @@ export async function createWorkspace(
 		await restrict(dir, true);
 	}
 	await assertNoLinks(raiz);
+	await writeClave(raiz);
 	const etapas = {} as State["etapas"];
 	for (const e of ETAPAS) {
 		etapas[e] = { estado: e === "init" ? "ok" : "pendiente", ts };

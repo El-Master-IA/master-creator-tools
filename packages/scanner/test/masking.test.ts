@@ -1,7 +1,15 @@
 import { MctError } from "@mct/contract/errors";
 import { describe, expect, it } from "vitest";
-import { findingId, normalizeValue } from "../src/finding-id.js";
+import {
+	type FindingIdInput,
+	findingId as findingIdConClave,
+	normalizeValue,
+} from "../src/finding-id.js";
 import { maskDictionary, maskValue } from "../src/masking.js";
+import { CLAVE_PRUEBA } from "./clave.js";
+
+const findingId = (input: FindingIdInput) =>
+	findingIdConClave(input, CLAVE_PRUEBA);
 
 const sample = ["sk", "-", "proj", "-", "abcdef0123456789"].join("");
 

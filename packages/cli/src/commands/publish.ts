@@ -4,8 +4,10 @@ import { MctError } from "@mct/contract/errors";
 import { type CleanResult, cleanWorkspace } from "@mct/core/clean";
 import { createGithubClient, type GithubClient } from "@mct/core/github";
 import {
+	leerResumenPublish,
 	type PublishOptions,
 	type PublishResult,
+	type PublishResumen,
 	publish,
 } from "@mct/core/publish";
 import type { Command } from "commander";
@@ -29,6 +31,8 @@ export interface PublishDeps {
 		env: Record<string, string | undefined>;
 	}) => Promise<GithubClient>;
 	publish: (o: PublishOptions) => Promise<PublishResult>;
+	/** PUB-013: decisions, notices and overrides shown before asking the repo name. */
+	resumen: (raiz: string) => Promise<PublishResumen>;
 	clean: (o: {
 		raiz: string;
 		force: true;
@@ -56,6 +60,7 @@ const DEFAULT_DEPS: PublishDeps = {
 	prompter: clackPrompter,
 	createClient: (o) => createGithubClient(o),
 	publish,
+	resumen: (raiz) => leerResumenPublish(raiz),
 	clean: (o) => cleanWorkspace(o),
 };
 
@@ -71,6 +76,44 @@ export function overridePublishDeps(partial: Partial<PublishDeps>): () => void {
 }
 
 // ------------------------------------------------------------------ text
+
+const AVISOS_ES: Record<string, string> = {
+	"verify.omitido":
+		"Verify: este proyecto no se probó en un contenedor. Revisa a mano que arranca antes de publicar.",
+	"verify.poetrySinLock": "Verify: poetry.lock no se respeta en verify.",
+	"verify.pipCheck": "Verify: pip check falló; en modo compilar no bloquea.",
+	"licenses.sinGestor":
+		"Licencias: sin gestor de dependencias reconocido; revisa a mano las librerías incluidas.",
+};
+const AVISOS_EN: Record<string, string> = {
+	"verify.omitido":
+		"Verify: this project was not tested in a container. Check by hand that it runs before publishing.",
+	"verify.poetrySinLock": "Verify: poetry.lock is not honored in verify.",
+	"verify.pipCheck":
+		"Verify: pip check failed; in compile mode it does not block.",
+	"licenses.sinGestor":
+		"Licenses: no recognized dependency manager; review bundled libraries by hand.",
+};
+
+/** Paths come from the repo being published: drop control characters before printing. */
+const limpio = (v: string): string =>
+	Array.from(v, (c) => {
+		const n = c.codePointAt(0) ?? 0;
+		return n < 0x20 || (n >= 0x7f && n <= 0x9f) ? "?" : c;
+	}).join("");
+
+function resumenLineas(t: Text, r: PublishResumen): string[] {
+	const out: string[] = [];
+	if (r.adaptador !== "") out.push(t.resumenAdaptador(limpio(r.adaptador)));
+	out.push(t.porVia(r.porArchivo.length, r.porAutoFixtures.length));
+	for (const d of [...r.porArchivo, ...r.porAutoFixtures]) {
+		out.push(`  - ${limpio(d.regla)} · ${limpio(d.archivo)}`);
+	}
+	for (const a of r.avisos) out.push(t.aviso(a));
+	for (const o of r.overrides)
+		out.push(t.override(limpio(o.clave), limpio(o.motivo)));
+	return out;
+}
 
 const TEXT = {
 	es: {
@@ -93,6 +136,11 @@ const TEXT = {
 			(privado
 				? "; quedará privado (--private)."
 				: "; después del escaneo remoto se pedirá hacerlo público."),
+		resumenAdaptador: (a: string) => `Adaptador: ${a}`,
+		porVia: (n: number, m: number) =>
+			`${n} hallazgos resueltos por archivo · ${m} por auto-fixtures (regla y ruta abajo)`,
+		aviso: (clave: string) => AVISOS_ES[clave] ?? clave,
+		override: (clave: string, motivo: string) => `${clave}. Motivo: ${motivo}`,
 		confirmar: (repo: string) =>
 			`Escribe el nombre del repo para confirmar (${repo})`,
 		publico: "¿Hacerlo público ahora?",
@@ -129,6 +177,11 @@ const TEXT = {
 			(privado
 				? "; it will stay private (--private)."
 				: "; after the remote scan you will be asked to make it public."),
+		resumenAdaptador: (a: string) => `Adapter: ${a}`,
+		porVia: (n: number, m: number) =>
+			`${n} findings resolved by file · ${m} by auto-fixtures (rule and path below)`,
+		aviso: (clave: string) => AVISOS_EN[clave] ?? clave,
+		override: (clave: string, motivo: string) => `${clave}. Reason: ${motivo}`,
 		confirmar: (repo: string) => `Type the repo name to confirm (${repo})`,
 		publico: "Make it public now?",
 		borrar: (ws: string) => `Delete the ${ws} workspace with the working copy?`,
@@ -223,6 +276,8 @@ export function register(program: Command): void {
 				return;
 			}
 			ctx.info(t.resumen(checked.url, privado));
+			// PUB-013, VER-007, LIC-006: the person sees decisions and notices before typing the name.
+			ctx.info(resumenLineas(t, await deps.resumen(raiz)).join("\n"));
 
 			stopIfAborted(ctx, t);
 			const typed = await deps.prompter.text({ message: t.confirmar(repo) });

@@ -610,6 +610,16 @@ describe("LIC-004 mct licenses command", () => {
 			bloquea: 1,
 			revisar: 0,
 			overrides: 0,
+			avisos: [],
+			// PLG-005: what still blocks, with the override that would accept it.
+			pendientes: [
+				{
+					paquete: "g",
+					version: "1.0.0",
+					veredicto: "bloquea",
+					override: "allow",
+				},
+			],
 		});
 		const report = JSON.parse(
 			await readFile(join(raiz, "license-report.json"), "utf8"),

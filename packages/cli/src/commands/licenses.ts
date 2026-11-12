@@ -2,6 +2,7 @@ import { lstat, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { MctError } from "@mct/contract/errors";
 import type { Finding, State } from "@mct/contract/types";
+import { readReportAvisos } from "@mct/core/avisos";
 import { loadConfig } from "@mct/core/config";
 import { hashTree } from "@mct/core/hash";
 import {
@@ -16,7 +17,16 @@ import type { Command } from "commander";
 // The cli package does not declare these workspace packages yet (package.json is
 // outside T22), so they are reached by relative path until it does.
 import { listCommunityNodes } from "../../../adapter-n8n/src/index.js";
-import { auditLicenses } from "../../../licenses/src/audit.js";
+import {
+	type AuditResult,
+	auditLicenses,
+} from "../../../licenses/src/audit.js";
+import { auditPython } from "../../../licenses/src/python.js";
+import {
+	AVISO_SIN_GESTOR,
+	auditSinGestor,
+	writeLicenseAvisos,
+} from "../../../licenses/src/sin-gestor.js";
 import {
 	formatAlternatives,
 	gateExit,
@@ -68,6 +78,41 @@ async function readFindings(raiz: string): Promise<Finding[]> {
 	return list as Finding[];
 }
 
+/** EXPERIENCE.md: texto de los avisos de licencias. */
+const AVISOS: Record<string, Record<Lang, string>> = {
+	"indice-privado-fuera": {
+		es: "Índice privado detectado fuera de requirements; no se consultó PyPI",
+		en: "Private index detected outside requirements; PyPI was not queried",
+	},
+	[AVISO_SIN_GESTOR]: {
+		es: "Sin gestor de dependencias reconocido: revisa a mano las librerías incluidas",
+		en: "No recognized dependency manager: review bundled libraries by hand",
+	},
+};
+
+/** Which mct.config.json override accepts this entry (LIC-005/LIC-006). */
+export function overrideDe(
+	paquete: string,
+): "sinLock" | "gestorNoSoportado" | "allow" {
+	if (paquete.startsWith("(gestor no soportado")) return "gestorNoSoportado";
+	// Manifest below the root: unaudited tree, accepted like a missing lockfile (LIC-006).
+	if (paquete.startsWith("(manifiesto en subcarpeta")) return "sinLock";
+	if (paquete.startsWith("(")) return "sinLock";
+	return "allow";
+}
+
+/** Entries still blocking the gate, for --json (plugin /liberar, PLG-005). */
+function pendientes(entries: readonly LicenseEntry[]) {
+	return entries
+		.filter((e) => e.veredicto === "bloquea" || e.veredicto === "revisar")
+		.map((e) => ({
+			paquete: e.paquete,
+			version: e.version,
+			veredicto: e.veredicto,
+			override: overrideDe(e.paquete),
+		}));
+}
+
 function humanSummary(
 	lang: Lang,
 	data: {
@@ -77,6 +122,7 @@ function humanSummary(
 		overrides: number;
 	},
 	entries: readonly LicenseEntry[],
+	avisos: readonly string[] = [],
 ): string {
 	const head =
 		lang === "en"
@@ -90,14 +136,93 @@ function humanSummary(
 			...formatAlternatives(e).map((l) => `    ${l}`),
 		);
 	}
-	if (data.bloquea + data.revisar > 0) {
+	const tipos = new Set(
+		entries
+			.filter((e) => e.veredicto === "bloquea" || e.veredicto === "revisar")
+			.map((e) => overrideDe(e.paquete)),
+	);
+	if (tipos.has("allow")) {
 		lines.push(
 			lang === "en"
 				? "Accept a license with a reason in mct.config.json (licenses.allow) or replace the package."
 				: "Acepta la licencia con motivo en mct.config.json (licenses.allow) o cambia el paquete.",
 		);
 	}
+	if (tipos.has("sinLock")) {
+		lines.push(
+			lang === "en"
+				? "Add a lockfile (uv lock) or accept it with a reason in mct.config.json (licenses.sinLock.motivo)."
+				: "Agrega un lockfile (uv lock) o acéptalo con motivo en mct.config.json (licenses.sinLock.motivo).",
+		);
+	}
+	if (tipos.has("gestorNoSoportado")) {
+		lines.push(
+			lang === "en"
+				? "Review those dependencies by hand and accept with a reason in mct.config.json (licenses.gestorNoSoportado.motivo)."
+				: "Revisa esas dependencias a mano y acéptalas con motivo en mct.config.json (licenses.gestorNoSoportado.motivo).",
+		);
+	}
+	for (const a of avisos) {
+		lines.push(
+			`${lang === "en" ? "Warning" : "Aviso"}: ${AVISOS[a]?.[lang] ?? a}`,
+		);
+	}
 	return lines.join("\n");
+}
+
+/** LIC-004 (node, n8n), LIC-005 (python) or LIC-006 (estatico, generico), by adapter. */
+async function auditByAdapter(
+	state: State,
+	raiz: string,
+	config: Awaited<ReturnType<typeof loadConfig>>,
+	offline: boolean,
+): Promise<AuditResult & { avisos: string[] }> {
+	const ws = workspacePaths(raiz);
+	const allow = config.licenses?.allow ?? [];
+	const sinLock = config.licenses?.sinLock;
+	if (state.adapter === "python") {
+		const py = await auditPython({
+			workDir: ws.work,
+			quarantineDir: ws.quarantine,
+			allow,
+			offline,
+			mctVersion: state.mctVersion,
+			...(sinLock !== undefined && { sinLock }),
+		});
+		await writeLicenseAvisos(raiz, py.avisos);
+		return py;
+	}
+	if (state.adapter === "estatico" || state.adapter === "generico") {
+		const gestorNoSoportado = config.licenses?.gestorNoSoportado;
+		return auditSinGestor({
+			adapter: state.adapter,
+			workDir: ws.work,
+			mctDir: raiz,
+			allow,
+			offline,
+			mctVersion: state.mctVersion,
+			...(sinLock !== undefined && { sinLock }),
+			...(gestorNoSoportado !== undefined && { gestorNoSoportado }),
+			...(state.origen.tipo === "carpeta" && {
+				node: { originDir: state.origen.ref },
+			}),
+		});
+	}
+	const extra =
+		state.adapter === "n8n"
+			? (await listCommunityNodes(ws)).map((c) => ({
+					paquete: c.paquete,
+					version: "latest",
+				}))
+			: undefined;
+	const result = await auditLicenses({
+		lockDir: ws.work,
+		...(state.origen.tipo === "carpeta" && { originDir: state.origen.ref }),
+		offline,
+		...(extra !== undefined && { extra }),
+		allow,
+	});
+	return { ...result, avisos: [] };
 }
 
 async function run(ctx: CliContext, offline: boolean): Promise<void> {
@@ -106,20 +231,7 @@ async function run(ctx: CliContext, offline: boolean): Promise<void> {
 		const state = await readState(raiz);
 		const ws = workspacePaths(raiz);
 		const config = await loadConfig(dirname(raiz));
-		const extra =
-			state.adapter === "n8n"
-				? (await listCommunityNodes(ws)).map((c) => ({
-						paquete: c.paquete,
-						version: "latest",
-					}))
-				: undefined;
-		const result = await auditLicenses({
-			lockDir: ws.work,
-			...(state.origen.tipo === "carpeta" && { originDir: state.origen.ref }),
-			offline,
-			...(extra !== undefined && { extra }),
-			allow: config.licenses?.allow ?? [],
-		});
+		const result = await auditByAdapter(state, raiz, config, offline);
 
 		const ts = new Date().toISOString();
 		const exit = gateExit(result.entries);
@@ -148,6 +260,7 @@ async function run(ctx: CliContext, offline: boolean): Promise<void> {
 				estado: next.etapas[etapa].estado,
 			})),
 			hallazgos: await readFindings(raiz),
+			avisos: await readReportAvisos(raiz, next.verificado),
 			licencias: result.entries.map((e) => ({
 				paquete: e.paquete,
 				version: e.version,
@@ -165,8 +278,12 @@ async function run(ctx: CliContext, offline: boolean): Promise<void> {
 		await writeState(raiz, next);
 
 		ctx.result(
-			result.resumen,
-			humanSummary(ctx.lang, result.resumen, result.entries),
+			{
+				...result.resumen,
+				avisos: result.avisos,
+				...(exit !== 0 && { pendientes: pendientes(result.entries) }),
+			},
+			humanSummary(ctx.lang, result.resumen, result.entries, result.avisos),
 			exit,
 		);
 	});

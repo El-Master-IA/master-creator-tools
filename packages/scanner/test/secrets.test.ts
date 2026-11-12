@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MctError } from "@mct/contract/errors";
 import { afterEach, describe, expect, it } from "vitest";
-import { scan } from "../src/scan.js";
+import { type ScanOptions, scan as scanConClave } from "../src/scan.js";
+import { CLAVE_PRUEBA } from "./clave.js";
+
+const scan = (options: ScanOptions) =>
+	scanConClave({ clave: CLAVE_PRUEBA, ...options });
+
 import { detectSecrets } from "../src/secrets.js";
 import { buildFixture, type Fixture } from "./fixtures/build.js";
 import { makeSecrets } from "./fixtures/secretos.js";

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { access, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { MctError } from "@mct/contract/errors";
 import type { Finding, Rule, Severidad } from "@mct/contract/types";
 import fg from "fast-glob";
 import { scanBinaries } from "./binary.js";
 import { DICT_RULE, detectDictionary } from "./dictionary.js";
-import { findingId, normalizeValue } from "./finding-id.js";
+import { findingId, leerClave, normalizeValue } from "./finding-id.js";
 import {
 	checkGitleaksVersion,
 	type GitleaksFinding,
@@ -65,6 +65,11 @@ export interface ScanOptions {
 	readonly reconcile?: Reconciler;
 	readonly gitleaks: ScanGitleaksOptions;
 	readonly maxBytes?: number;
+	/**
+	 * HMAC key of the workspace (SCAN-015). If absent it is read from
+	 * `<dirname(work)>/clave`; if that is missing too: WORKSPACE_INVALIDO.
+	 */
+	readonly clave?: Uint8Array;
 }
 
 export interface ScanResult {
@@ -160,15 +165,18 @@ interface Draft {
 	fin?: number;
 }
 
-function toFinding(d: Draft): Finding {
+function toFinding(d: Draft, clave: Uint8Array): Finding {
 	return {
-		id: findingId({
-			motor: d.motor,
-			regla: d.regla,
-			archivo: d.archivo,
-			linea: d.linea,
-			value: d.valor,
-		}),
+		id: findingId(
+			{
+				motor: d.motor,
+				regla: d.regla,
+				archivo: d.archivo,
+				linea: d.linea,
+				value: d.valor,
+			},
+			clave,
+		),
 		motor: d.motor,
 		regla: d.regla,
 		tipo: d.tipo,
@@ -510,20 +518,26 @@ async function runZone(
 	return { version: result.version, drafts };
 }
 
-function registryFinding(issue: RegistryIssueInput): Finding {
+function registryFinding(
+	issue: RegistryIssueInput,
+	clave: Uint8Array,
+): Finding {
 	const credenciales = issue.tipo.startsWith("credenciales");
-	return toFinding({
-		motor: "mct",
-		regla: issue.tipo,
-		tipo: "estructura",
-		zona: issue.zona,
-		archivo: issue.archivo,
-		linea: issue.linea,
-		columna: 1,
-		valor: issue.tipo,
-		fragmento: "****",
-		severidad: credenciales ? "critico" : "alto",
-	});
+	return toFinding(
+		{
+			motor: "mct",
+			regla: issue.tipo,
+			tipo: "estructura",
+			zona: issue.zona,
+			archivo: issue.archivo,
+			linea: issue.linea,
+			columna: 1,
+			valor: issue.tipo,
+			fragmento: "****",
+			severidad: credenciales ? "critico" : "alto",
+		},
+		clave,
+	);
 }
 
 function order(a: Finding, b: Finding): number {
@@ -558,6 +572,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
 			etapa: "scan",
 		});
 	}
+	const clave = options.clave ?? (await leerClave(dirname(options.work)));
 	const zones: {
 		zona: Zona;
 		root: string;
@@ -586,7 +601,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
 		if (!found.has(f.id)) found.set(f.id, f);
 	};
 	const addDraft = (d: Draft): void => {
-		const f = toFinding(d);
+		const f = toFinding(d, clave);
 		if (!found.has(f.id)) {
 			valueDigests.set(
 				f.id,
@@ -601,6 +616,7 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
 	for (const z of zones) {
 		const binaries = await scanBinaries(z.root, z.files, {
 			zona: z.zona,
+			clave,
 			...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }),
 		});
 		const skipped = new Set(binaries.map((f) => f.archivo));
@@ -647,7 +663,8 @@ export async function scan(options: ScanOptions): Promise<ScanResult> {
 		});
 	}
 
-	for (const issue of options.registryIssues ?? []) add(registryFinding(issue));
+	for (const issue of options.registryIssues ?? [])
+		add(registryFinding(issue, clave));
 
 	let hallazgos = [...found.values()].sort(order);
 	if (options.previos !== undefined && options.reconcile !== undefined) {

@@ -22,6 +22,8 @@ export interface ScanBinariesOptions {
 	/** Same limit as the text engines (50 MB by default). */
 	readonly maxBytes?: number;
 	readonly zona?: "work" | "quarantine";
+	/** HMAC key of the workspace (SCAN-015). */
+	readonly clave: Uint8Array;
 }
 
 type RuleKind = Exclude<ContentClass, "text"> | "oversize" | "unreadable";
@@ -230,14 +232,18 @@ export function binaryFindingId(
 	regla: string,
 	archivo: string,
 	contenido: string,
+	clave: Uint8Array,
 ): string {
-	return findingId({
-		motor: "mct",
-		regla,
-		archivo,
-		linea: 0,
-		value: `${regla}:${contenido}`,
-	});
+	return findingId(
+		{
+			motor: "mct",
+			regla,
+			archivo,
+			linea: 0,
+			value: `${regla}:${contenido}`,
+		},
+		clave,
+	);
 }
 
 /**
@@ -245,6 +251,7 @@ export function binaryFindingId(
  * binary does not survive the file being replaced by another one.
  */
 function makeFinding(
+	clave: Uint8Array,
 	kind: RuleKind,
 	archivo: string,
 	zona: "work" | "quarantine",
@@ -255,14 +262,17 @@ function makeFinding(
 	return {
 		id:
 			contenido === undefined
-				? findingId({
-						motor: "mct",
-						regla: rule.regla,
-						archivo,
-						linea: 0,
-						value: rule.regla,
-					})
-				: binaryFindingId(rule.regla, archivo, contenido),
+				? findingId(
+						{
+							motor: "mct",
+							regla: rule.regla,
+							archivo,
+							linea: 0,
+							value: rule.regla,
+						},
+						clave,
+					)
+				: binaryFindingId(rule.regla, archivo, contenido, clave),
 		motor: "mct",
 		regla: rule.regla,
 		tipo: "binario",
@@ -295,8 +305,9 @@ async function readHead(path: string): Promise<Uint8Array> {
 export async function scanBinaries(
 	root: string,
 	files: readonly string[],
-	options: ScanBinariesOptions = {},
+	options: ScanBinariesOptions,
 ): Promise<Finding[]> {
+	const clave = options.clave;
 	const maxBytes = options.maxBytes ?? MAX_TEXT_BYTES;
 	const zona = options.zona ?? "work";
 	const findings: Finding[] = [];
@@ -305,12 +316,12 @@ export async function scanBinaries(
 		try {
 			const info = await lstat(path);
 			if (!info.isFile()) {
-				findings.push(makeFinding("unreadable", archivo, zona));
+				findings.push(makeFinding(clave, "unreadable", archivo, zona));
 				continue;
 			}
 			if (info.size > maxBytes) {
 				findings.push(
-					makeFinding("oversize", archivo, zona, await hashFile(path)),
+					makeFinding(clave, "oversize", archivo, zona, await hashFile(path)),
 				);
 				continue;
 			}
@@ -319,10 +330,12 @@ export async function scanBinaries(
 				kind = await verifyWholeFile(path, kind);
 			}
 			if (kind !== "text") {
-				findings.push(makeFinding(kind, archivo, zona, await hashFile(path)));
+				findings.push(
+					makeFinding(clave, kind, archivo, zona, await hashFile(path)),
+				);
 			}
 		} catch {
-			findings.push(makeFinding("unreadable", archivo, zona));
+			findings.push(makeFinding(clave, "unreadable", archivo, zona));
 		}
 	}
 	return findings;

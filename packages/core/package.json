@@ -8,8 +8,11 @@
 		"./*": "./src/*.ts"
 	},
 	"dependencies": {
+		"@mct/adapter-generic": "workspace:*",
 		"@mct/adapter-n8n": "workspace:*",
 		"@mct/adapter-node": "workspace:*",
+		"@mct/adapter-python": "workspace:*",
+		"@mct/adapter-static": "workspace:*",
 		"@mct/contract": "workspace:*",
 		"@mct/licenses": "workspace:*",
 		"@mct/scanner": "workspace:*",

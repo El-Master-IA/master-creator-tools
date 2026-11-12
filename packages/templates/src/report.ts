@@ -19,6 +19,22 @@ export interface LicenseRow {
 	alternativa?: string;
 }
 
+/** Notices shown under the gates (EXPERIENCE.md 1.1 to 1.3); the texts live here, not in the callers. */
+export type ReportAviso =
+	| "verify.omitido"
+	| "verify.compilar"
+	| "verify.poetrySinLock"
+	| "verify.pipCheck"
+	| "licenses.sinGestor";
+
+const AVISOS: readonly ReportAviso[] = [
+	"verify.omitido",
+	"verify.compilar",
+	"verify.poetrySinLock",
+	"verify.pipCheck",
+	"licenses.sinGestor",
+];
+
 export interface ReportData {
 	lang: ReportLang;
 	/** ISO-8601 UTC; shown as local time with offset (DESIGN.md). */
@@ -26,6 +42,8 @@ export interface ReportData {
 	puertas: { etapa: Etapa; estado: EstadoEtapa }[];
 	hallazgos: Finding[];
 	licencias: LicenseRow[];
+	/** Optional notices, rendered as level-3 headings inside the gates section. */
+	avisos?: readonly ReportAviso[];
 }
 
 const SEVERIDADES: readonly Severidad[] = ["critico", "alto", "medio", "bajo"];
@@ -63,6 +81,16 @@ const TEXTOS = {
 		alternative: "Alternativa",
 		none: "Sin elementos.",
 		empty: "Aún no hay resultados. Corre mct scan para llenar este reporte.",
+		avisos: {
+			"verify.omitido":
+				"Este proyecto no se probó en un contenedor (adaptador genérico).",
+			"verify.compilar":
+				"Verify en modo compilar, sin arrancar el proyecto (ver verify.motivo en mct.config.json).",
+			"verify.poetrySinLock": "poetry.lock no se respeta en verify.",
+			"verify.pipCheck": "pip check falló; en modo compilar no bloquea.",
+			"licenses.sinGestor":
+				"Sin gestor de dependencias reconocido: revisa a mano las librerías incluidas.",
+		},
 		sev: { critico: "CRÍTICO", alto: "ALTO", medio: "MEDIO", bajo: "BAJO" },
 		estado: { ok: "pasa", bloqueada: "bloqueada", pendiente: "pendiente" },
 	},
@@ -85,6 +113,16 @@ const TEXTOS = {
 		alternative: "Alternative",
 		none: "No items.",
 		empty: "No results yet. Run mct scan to fill this report.",
+		avisos: {
+			"verify.omitido":
+				"This project was not tested in a container (generic adapter).",
+			"verify.compilar":
+				"Verify in compile mode, project not started (see verify.motivo in mct.config.json).",
+			"verify.poetrySinLock": "poetry.lock is not honored in verify.",
+			"verify.pipCheck": "pip check failed; in compile mode it does not block.",
+			"licenses.sinGestor":
+				"No recognized dependency manager: review bundled libraries by hand.",
+		},
 		sev: { critico: "CRITICAL", alto: "HIGH", medio: "MEDIUM", bajo: "LOW" },
 		estado: { ok: "passed", bloqueada: "blocked", pendiente: "pending" },
 	},
@@ -149,6 +187,13 @@ export function renderReport(data: ReportData): string {
 		}
 	}
 
+	const avisos = (data.avisos ?? []).map((clave) => {
+		if (!AVISOS.includes(clave)) {
+			throw new MctError("VALIDACION", "Unknown notice");
+		}
+		return { clave, texto: t.avisos[clave] };
+	});
+
 	const grupos = SEVERIDADES.map((s) => {
 		const items = data.hallazgos.filter((f) => f.severidad === s);
 		return {
@@ -171,6 +216,7 @@ export function renderReport(data: ReportData): string {
 			simbolo: SIMBOLO_ESTADO[p.estado],
 			palabra: t.estado[p.estado],
 		})),
+		avisos,
 		grupos,
 		vacio: data.hallazgos.length === 0 && data.licencias.length === 0,
 		licencias: data.licencias.map((l) => ({

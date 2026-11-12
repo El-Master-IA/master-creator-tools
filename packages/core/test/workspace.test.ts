@@ -4,6 +4,7 @@ import {
 	mkdir,
 	mkdtemp,
 	readdir,
+	readFile,
 	rm,
 	stat,
 	symlink,
@@ -12,6 +13,7 @@ import {
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { MctError } from "@mct/contract/errors";
+import { leerClave } from "@mct/scanner/finding-id";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hashTree } from "../src/hash.js";
 import {
@@ -143,7 +145,7 @@ describe("workspace", () => {
 	it("STATE-001 aplica 0700 al directorio y 0600 a los archivos", async () => {
 		await createWorkspace(raiz, init);
 		if (process.platform === "win32") {
-			for (const p of [join(raiz, "state.json"), raiz]) {
+			for (const p of [join(raiz, "state.json"), join(raiz, "clave"), raiz]) {
 				const acl = execFileSync("icacls", [p]).toString();
 				// Language-independent: every ACE reads "<principal>:(perms)".
 				const principals = acl
@@ -160,6 +162,35 @@ describe("workspace", () => {
 		expect((await stat(raiz)).mode & 0o777).toBe(0o700);
 		expect((await stat(join(raiz, "work"))).mode & 0o777).toBe(0o700);
 		expect((await stat(join(raiz, "state.json"))).mode & 0o777).toBe(0o600);
+		expect((await stat(join(raiz, "clave"))).mode & 0o777).toBe(0o600);
+	});
+
+	it("SCAN-015 createWorkspace crea .mct/clave con 32 bytes aleatorios, distintos en cada workspace", async () => {
+		await createWorkspace(raiz, init);
+		const otra = join(base, "otro", ".mct");
+		await createWorkspace(otra, init);
+		const a = await leerClave(raiz);
+		const b = await leerClave(otra);
+		expect(a).toHaveLength(32);
+		expect(b).toHaveLength(32);
+		expect(a.equals(b)).toBe(false);
+	});
+
+	it("SCAN-015 la clave no queda en dist/ ni en state.json", async () => {
+		const ws = await createWorkspace(raiz, init);
+		const clave = await leerClave(raiz);
+		expect(await readdir(ws.dist)).toEqual([]);
+		const estado = await readFile(join(raiz, "state.json"));
+		expect(estado.includes(clave)).toBe(false);
+		expect(estado.toString("utf8")).not.toContain(clave.toString("hex"));
+	});
+
+	it("SCAN-015 un workspace sin clave (0.1.x) da WORKSPACE_INVALIDO con la acción mct init --force", async () => {
+		await createWorkspace(raiz, init);
+		await rm(join(raiz, "clave"));
+		const e = await rechazo(leerClave(raiz));
+		expect(e.codigo).toBe("WORKSPACE_INVALIDO");
+		expect(e.accion).toBe("mct init --force");
 	});
 });
 

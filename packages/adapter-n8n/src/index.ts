@@ -102,7 +102,7 @@ const RULES: readonly Rule[] = [
 		// Literal header/query value for Authorization, *key* or *token* (name, then value).
 		id: "n8n-literal-auth-param",
 		tipo: "secreto",
-		severidad: "alto",
+		severidad: "critico",
 		patron:
 			/"name"\s{0,20}:\s{0,20}"(?:authorization|[^"\\]{0,40}(?:key|token)[^"\\]{0,40})"\s{0,20},\s{0,20}"value"\s{0,20}:\s{0,20}"([^"\\=$\s][^"\\]{5,200})"/i,
 	},
@@ -110,7 +110,7 @@ const RULES: readonly Rule[] = [
 		// Same, with "value" before "name".
 		id: "n8n-literal-auth-param-rev",
 		tipo: "secreto",
-		severidad: "alto",
+		severidad: "critico",
 		patron:
 			/"value"\s{0,20}:\s{0,20}"([^"\\=$\s][^"\\]{5,200})"\s{0,20},\s{0,20}"name"\s{0,20}:\s{0,20}"(?:authorization|[^"\\]{0,40}(?:key|token)[^"\\]{0,40})"/i,
 	},
@@ -118,7 +118,7 @@ const RULES: readonly Rule[] = [
 		// password = "literal" inside a Code node (escaped quotes in the JSON text).
 		id: "n8n-code-password",
 		tipo: "secreto",
-		severidad: "alto",
+		severidad: "critico",
 		patron:
 			/"jsCode"\s{0,20}:\s{0,20}"(?:[^"\\]|\\.){0,5000}?\b(?:password|passwd|pwd)\s{0,5}[:=]\s{0,5}(?:\\"|')([^"'\\$\s]{4,200})(?:\\"|')/i,
 	},
@@ -508,7 +508,10 @@ async function readCandidate(path: string): Promise<unknown | undefined> {
 	}
 }
 
-export const n8nAdapter: Adapter = {
+/** These adapters always verify: the narrower type spares callers a null check. */
+export const n8nAdapter: Omit<Adapter, "verifyCommand"> & {
+	verifyCommand(a: Analysis): VerifySpec;
+} = {
 	id: "n8n",
 
 	async detect(dir: string): Promise<number> {

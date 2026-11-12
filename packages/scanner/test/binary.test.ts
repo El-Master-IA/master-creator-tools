@@ -2,7 +2,18 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { classifyContent, scanBinaries } from "../src/binary.js";
+import {
+	classifyContent,
+	type ScanBinariesOptions,
+	scanBinaries as scanBinariesConClave,
+} from "../src/binary.js";
+import { CLAVE_PRUEBA } from "./clave.js";
+
+const scanBinaries = (
+	root: string,
+	files: readonly string[],
+	options: Partial<ScanBinariesOptions> = {},
+) => scanBinariesConClave(root, files, { clave: CLAVE_PRUEBA, ...options });
 
 const dirs: string[] = [];
 

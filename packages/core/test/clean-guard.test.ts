@@ -152,7 +152,7 @@ describe("CLN-001 guard", () => {
 			},
 		});
 		expect(visto?.ruta).toBe(raiz);
-		expect(visto?.archivos).toBe(1);
+		expect(visto?.archivos).toBe(2); // state.json + clave
 	});
 
 	it("CLN-001 --force borra sin TTY y no toca mct.config.json", async () => {
@@ -160,7 +160,7 @@ describe("CLN-001 guard", () => {
 		const cfg = join(base, "mct.config.json");
 		await writeFile(cfg, "{}\n");
 		const r = await cleanWorkspace({ raiz, force: true, isTTY: false });
-		expect(r).toEqual({ borrado: raiz, archivos: 1 });
+		expect(r).toEqual({ borrado: raiz, archivos: 2 });
 		expect(await exists(raiz)).toBe(false);
 		expect(await exists(cfg)).toBe(true);
 	});

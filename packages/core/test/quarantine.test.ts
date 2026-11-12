@@ -43,7 +43,7 @@ describe("SAN-005 clean borra la cuarentena", () => {
 
 		const r = await cleanWorkspace({ raiz, force: true, isTTY: false });
 
-		expect(r.archivos).toBe(4);
+		expect(r.archivos).toBe(5);
 		expect(await exists(ws.quarantine)).toBe(false);
 		expect(await exists(ws.work)).toBe(false);
 		expect(await exists(ws.dist)).toBe(false);

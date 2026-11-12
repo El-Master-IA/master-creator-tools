@@ -40,6 +40,7 @@ th,td{text-align:left;vertical-align:top;padding:8px 12px;border-top:1px solid v
 .sev-bajo{color:var(--acento)}
 .estado-ok{color:var(--ok)}
 .estado-bloqueada{color:var(--error)}
+.aviso{font-size:16px;line-height:1.5;margin:12px 0 0;color:var(--aviso)}
 .vacio{background:var(--sup);border:1px solid var(--borde);border-radius:4px;padding:16px}
 @media (max-width:640px){
 table,thead,tbody,tr,th,td,caption{display:block;width:100%}
@@ -65,6 +66,9 @@ td::before{content:attr(data-label) ": ";color:var(--suave);font-size:14px}
 <li class="estado-<%= g.estado %>"><strong><%= g.etapa %></strong> <span aria-hidden="true"><%= g.simbolo %></span> <%= g.palabra %></li>
 <% } %>
 </ul>
+<% for (const a of it.avisos) { %>
+<h3 class="aviso" data-aviso="<%= a.clave %>"><span aria-hidden="true">▲</span> <%= a.texto %></h3>
+<% } %>
 </section>
 <nav class="nav-filtros" aria-label="<%= it.t.filters %>">
 <h2><%= it.t.filters %></h2>

@@ -1,0 +1,13 @@
+{
+	"name": "@mct/adapter-static",
+	"version": "0.0.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"exports": {
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@mct/contract": "workspace:*"
+	}
+}

@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { text as clackText, confirm, isCancel, select } from "@clack/prompts";
 import { MctError } from "@mct/contract/errors";
 import type { Adapter, Finding, Rule } from "@mct/contract/types";
+import { adapterById } from "@mct/core/adapters";
 import { hashTree } from "@mct/core/hash";
 import { initFromSource } from "@mct/core/init";
 import { defaultDictionaryPath } from "@mct/core/init-guards";
 import {
+	autoFixturesLista,
 	type Decision,
 	type Decisor,
+	hallazgosAbiertos,
+	type ListaAuto,
 	type RescanResult,
 	sanitize,
 } from "@mct/core/sanitize";
@@ -18,11 +23,7 @@ import { readState, workspacePaths } from "@mct/core/workspace";
 import type { Command } from "commander";
 // The CLI package does not list the engines as dependencies; they are bundled
 // from their sources (same approach as core, which owns the real scan stage).
-import { n8nAdapter } from "../../../adapter-n8n/src/index.js";
-import {
-	findRegistryIssues,
-	nodeAdapter,
-} from "../../../adapter-node/src/index.js";
+import { findRegistryIssues } from "../../../adapter-node/src/index.js";
 import {
 	detectDictionary,
 	loadDictionary,
@@ -143,8 +144,25 @@ const TEXT = {
 		sanOk: (h: string) =>
 			`0 hallazgos abiertos · aprobación firmada (sha256 …${h}). Siguiente: mct licenses`,
 		sanSinTty:
-			"La revisión de hallazgos necesita una terminal interactiva. No se aprueba en automático.",
+			"La revisión de hallazgos necesita una terminal interactiva, o un archivo con --decisiones o --auto-fixtures --confirmo. No se aprueba en automático.",
 		sanSinTtyAccion: "Corre mct sanitize desde una terminal",
+		decisionesFlag:
+			"aplica decisiones desde un JSON (falso-positivo o reemplazar)",
+		autoFixturesFlag:
+			"marca como falso positivo los datos de prueba en rutas de test",
+		dryRunFlag: "con --auto-fixtures: solo lista los candidatos y su sha256",
+		confirmoFlag: "con --auto-fixtures: sha256 de la lista que ya viste",
+		autoSolo: (f: string) => `${f} solo se usa junto con --auto-fixtures`,
+		dryRunConfirmo:
+			"--dry-run no se combina con --confirmo ni con --decisiones",
+		autoPregunta: (n: number, grupos: string) =>
+			`Encontré ${n} datos de prueba en rutas de test (${grupos}). ¿Marcarlos como falso positivo?`,
+		autoAplicado: (n: number, h: string, q: number) =>
+			`${n} hallazgos marcados como datos de prueba (auto-fixtures, sha256 …${h}). Quedan ${q} abiertos.`,
+		decAplicadas: (n: number, h: string, q: number) =>
+			`Apliqué ${n} decisiones de decisiones.json (sha256 …${h}). Quedan ${q} abiertos.`,
+		autoListo: (n: number, h: string) =>
+			`${n} candidatos de auto-fixtures (sha256 …${h}). Nada se aplicó. Para aplicar: mct sanitize --auto-fixtures --confirmo <sha256>`,
 		destInvalido:
 			"Sin --dest, --workspace debe terminar en .mct para saber dónde crear el workspace.",
 		sync: (nombre: string, ruta: string) =>
@@ -188,8 +206,24 @@ const TEXT = {
 		sanOk: (h: string) =>
 			`0 open findings · approval signed (sha256 …${h}). Next: mct licenses`,
 		sanSinTty:
-			"Finding review needs an interactive terminal. Nothing is auto-approved.",
+			"Finding review needs an interactive terminal, or a file with --decisiones or --auto-fixtures --confirmo. Nothing is auto-approved.",
 		sanSinTtyAccion: "Run mct sanitize from a terminal",
+		decisionesFlag: "apply decisions from a JSON (false-positive or replace)",
+		autoFixturesFlag: "mark test data in test paths as false positives",
+		dryRunFlag:
+			"with --auto-fixtures: only list the candidates and their sha256",
+		confirmoFlag: "with --auto-fixtures: sha256 of the list you already saw",
+		autoSolo: (f: string) => `${f} is only used together with --auto-fixtures`,
+		dryRunConfirmo:
+			"--dry-run cannot be combined with --confirmo or --decisiones",
+		autoPregunta: (n: number, grupos: string) =>
+			`Found ${n} test values in test paths (${grupos}). Mark them as false positives?`,
+		autoAplicado: (n: number, h: string, q: number) =>
+			`${n} findings marked as test data (auto-fixtures, sha256 …${h}). ${q} still open.`,
+		decAplicadas: (n: number, h: string, q: number) =>
+			`Applied ${n} decisions from decisiones.json (sha256 …${h}). ${q} still open.`,
+		autoListo: (n: number, h: string) =>
+			`${n} auto-fixtures candidates (sha256 …${h}). Nothing was applied. To apply: mct sanitize --auto-fixtures --confirmo <sha256>`,
 		destInvalido:
 			"Without --dest, --workspace must end in .mct so the workspace location is known.",
 		sync: (nombre: string, ruta: string) =>
@@ -215,6 +249,16 @@ const TEXT = {
 		enLote: "↳ same decision as before (batch confirmed)",
 	},
 } as const;
+
+/** `--type` values of `init` and `run` (DET-001). */
+export const TIPOS = [
+	"auto",
+	"n8n",
+	"node",
+	"python",
+	"estatico",
+	"generico",
+] as const;
 
 const MOTIVO_MIN = 10;
 const MOTIVO_MAX = 500;
@@ -448,11 +492,13 @@ export function register(program: Command): void {
 				const ctx = contextOf(program);
 				const t = TEXT[ctx.lang];
 				if (
-					opts.type !== "auto" &&
-					opts.type !== "n8n" &&
-					opts.type !== "node"
+					opts.type === undefined ||
+					!(TIPOS as readonly string[]).includes(opts.type)
 				) {
-					throw new MctError("VALIDACION", "--type debe ser n8n, node o auto");
+					throw new MctError(
+						"VALIDACION",
+						"--type debe ser n8n, node, python, estatico, generico o auto",
+					);
 				}
 				let dest = opts.dest;
 				if (dest === undefined) {
@@ -468,7 +514,7 @@ export function register(program: Command): void {
 					signal: ctx.signal,
 					origen,
 					dest,
-					type: opts.type,
+					type: opts.type as (typeof TIPOS)[number],
 					force: opts.force === true,
 					isTTY: ctx.interactive,
 					lang: ctx.lang,
@@ -505,7 +551,7 @@ export function register(program: Command): void {
 					{
 						workspace: result.workspace.raiz,
 						adapter: result.adapter,
-						confianza: result.confianza,
+						confianza: Math.round(result.confianza * 100) / 100,
 						archivos: result.archivos,
 					},
 					t.initOk(
@@ -538,6 +584,7 @@ export function register(program: Command): void {
 				ctx.result(
 					{
 						hallazgos: r.hallazgos,
+						hallazgosAbiertos: [],
 						analysis: r.analysis,
 						gitleaksVersion: r.gitleaksVersion,
 					},
@@ -548,15 +595,19 @@ export function register(program: Command): void {
 					const n = Number(
 						(error.detalle as { abiertos?: unknown } | undefined)?.abiertos,
 					);
+					// SAN-013: the open findings travel in error.detalle (never the aislados).
+					const lista = await hallazgosAbiertos(raiz);
 					throw new MctError(
 						"PUERTA_BLOQUEADA",
 						Number.isFinite(n) ? t.scanCerrada(n) : error.message,
 						{
 							accion: "mct sanitize",
 							etapa: "scan",
-							...(error.detalle === undefined
-								? {}
-								: { detalle: error.detalle }),
+							detalle: {
+								...((error.detalle as Record<string, unknown> | undefined) ??
+									{}),
+								hallazgosAbiertos: lista,
+							},
 						},
 					);
 				}
@@ -569,45 +620,151 @@ export function register(program: Command): void {
 		.description(TEXT.es.sanitizeDesc)
 		.option("--auto-placeholders", TEXT.es.autoFlag)
 		.option("--reopen <id>", TEXT.es.reopenFlag)
-		.action(async (opts: { autoPlaceholders?: boolean; reopen?: string }) => {
-			const ctx = contextOf(program);
-			const t = TEXT[ctx.lang];
-			const raiz = resolve(ctx.workspace);
-			const state = await readState(raiz);
-			const adapter = [nodeAdapter, n8nAdapter].find(
-				(a) => a.id === state.adapter,
-			);
-			if (adapter === undefined) {
-				throw new MctError(
-					"WORKSPACE_INVALIDO",
-					"El adaptador del workspace no existe",
-					{ accion: "mct init <origen> --force" },
-				);
-			}
-			if (!ctx.interactive && deps.decisor === undefined) {
-				throw new MctError("PUERTA_BLOQUEADA", t.sanSinTty, {
-					accion: t.sanSinTtyAccion,
-					etapa: "sanitize",
-					detalle: { motivo: "sin-tty" },
-				});
-			}
-			const result = await sanitize({
-				raiz,
-				tty: ctx.interactive || deps.decisor !== undefined,
-				signal: ctx.signal,
-				decisor: deps.decisor ?? makeDecisor(ctx),
-				rescan: makeRescan(raiz, adapter, deps.home ?? homedir(), ctx.lang),
-				adapter,
-				mctVersion: pkg.version,
-				lang: ctx.lang,
-				...(opts.autoPlaceholders === true && { autoPlaceholders: true }),
-				...(opts.reopen === undefined ? {} : { reopen: opts.reopen }),
-			});
-			const hash = result.aprobacion?.arbolSha256.slice(-4) ?? "";
-			const decididos =
-				result.decididos.resuelto +
-				result.decididos.falsoPositivo +
-				result.decididos.aceptado;
-			ctx.result(result, decididos === 0 ? t.sanVacio(hash) : t.sanOk(hash));
-		});
+		.option("--decisiones <archivo>", TEXT.es.decisionesFlag)
+		.option("--auto-fixtures", TEXT.es.autoFixturesFlag)
+		.option("--dry-run", TEXT.es.dryRunFlag)
+		.option("--confirmo <sha256>", TEXT.es.confirmoFlag)
+		.action(
+			async (opts: {
+				autoPlaceholders?: boolean;
+				reopen?: string;
+				decisiones?: string;
+				autoFixtures?: boolean;
+				dryRun?: boolean;
+				confirmo?: string;
+			}) => {
+				const ctx = contextOf(program);
+				const t = TEXT[ctx.lang];
+				const raiz = resolve(ctx.workspace);
+				if (opts.autoFixtures !== true) {
+					if (opts.dryRun === true) {
+						throw new MctError("VALIDACION", t.autoSolo("--dry-run"));
+					}
+					if (opts.confirmo !== undefined) {
+						throw new MctError("VALIDACION", t.autoSolo("--confirmo"));
+					}
+				}
+				if (
+					opts.dryRun === true &&
+					(opts.confirmo !== undefined || opts.decisiones !== undefined)
+				) {
+					throw new MctError("VALIDACION", t.dryRunConfirmo);
+				}
+				const state = await readState(raiz);
+				const adapter = adapterById(state.adapter);
+				if (adapter === undefined) {
+					throw new MctError(
+						"WORKSPACE_INVALIDO",
+						"El adaptador del workspace no existe",
+						{ accion: "mct init <origen> --force" },
+					);
+				}
+				const home = deps.home ?? homedir();
+				const tty = ctx.interactive || deps.decisor !== undefined;
+				const base = {
+					raiz,
+					tty,
+					signal: ctx.signal,
+					decisor: deps.decisor ?? makeDecisor(ctx),
+					rescan: makeRescan(raiz, adapter, home, ctx.lang),
+					adapter,
+					mctVersion: pkg.version,
+					lang: ctx.lang,
+					terminos: await loadDictionary(defaultDictionaryPath(home)),
+				};
+				if (opts.dryRun === true) {
+					const lista = await autoFixturesLista({
+						...base,
+						autoFixtures: {},
+					});
+					ctx.result(
+						{ candidatos: lista.candidatos, sha256: lista.sha256 },
+						t.autoListo(lista.candidatos.length, lista.sha256.slice(-4)),
+					);
+					return;
+				}
+				let result: Awaited<ReturnType<typeof sanitize>>;
+				try {
+					result = await sanitize({
+						...base,
+						...(opts.autoPlaceholders === true && { autoPlaceholders: true }),
+						...(opts.reopen === undefined ? {} : { reopen: opts.reopen }),
+						...(opts.decisiones === undefined
+							? {}
+							: { decisiones: resolve(opts.decisiones) }),
+						...(opts.autoFixtures === true && {
+							autoFixtures: {
+								...(opts.confirmo === undefined
+									? {}
+									: { confirmo: opts.confirmo }),
+								confirmar: async (lista: ListaAuto) => {
+									const answer = await deps.prompter.confirm({
+										message: t.autoPregunta(
+											lista.candidatos.length,
+											resumenAuto(lista),
+										),
+										initialValue: false,
+									});
+									if (answer === null) throw interrumpido(ctx.lang);
+									return answer === true;
+								},
+							},
+						}),
+					});
+				} catch (error) {
+					// SAN-004: without a terminal the gate stays closed; say what would open it.
+					if (
+						error instanceof MctError &&
+						error.codigo === "PUERTA_BLOQUEADA" &&
+						!tty
+					) {
+						throw new MctError("PUERTA_BLOQUEADA", t.sanSinTty, {
+							accion: t.sanSinTtyAccion,
+							etapa: "sanitize",
+							...(error.detalle === undefined
+								? {}
+								: { detalle: error.detalle }),
+						});
+					}
+					throw error;
+				}
+				const hash = result.aprobacion?.arbolSha256.slice(-4) ?? "";
+				const decididos =
+					result.decididos.resuelto +
+					result.decididos.falsoPositivo +
+					result.decididos.aceptado;
+				if (opts.autoFixtures === true && result.porVia.autoFixtures > 0) {
+					ctx.info(
+						t.autoAplicado(
+							result.porVia.autoFixtures,
+							(opts.confirmo ?? "").slice(-4),
+							result.abiertos,
+						),
+					);
+				}
+				if (opts.decisiones !== undefined && result.porVia.archivo > 0) {
+					const sha = await readFile(opts.decisiones)
+						.then((b) => createHash("sha256").update(b).digest("hex"))
+						.catch(() => "");
+					ctx.info(
+						t.decAplicadas(
+							result.porVia.archivo,
+							sha.slice(-4),
+							result.abiertos,
+						),
+					);
+				}
+				ctx.result(result, decididos === 0 ? t.sanVacio(hash) : t.sanOk(hash));
+			},
+		);
+}
+
+/** "tests/x.py: 8 pii-email · ..." (rule and path only, never a value). */
+function resumenAuto(lista: ListaAuto): string {
+	const cuenta = new Map<string, number>();
+	for (const c of lista.candidatos) {
+		const k = `${c.archivo}: ${c.regla}`;
+		cuenta.set(k, (cuenta.get(k) ?? 0) + 1);
+	}
+	return [...cuenta].map(([k, n]) => `${k} x${n}`).join(" · ");
 }

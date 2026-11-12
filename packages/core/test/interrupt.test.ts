@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MctError } from "@mct/contract/errors";
 import type { Finding } from "@mct/contract/types";
-import { findingId } from "@mct/scanner/finding-id";
+import { findingId, leerClave } from "@mct/scanner/finding-id";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type Decision,
@@ -44,13 +44,16 @@ function finding(archivo: string, text: string, value: string): Finding {
 	const linea = before.split("\n").length;
 	const columna = at - (before.lastIndexOf("\n") + 1) + 1;
 	return {
-		id: findingId({
-			motor: "mct",
-			regla: "generic-token",
-			archivo,
-			linea,
-			value,
-		}),
+		id: findingId(
+			{
+				motor: "mct",
+				regla: "generic-token",
+				archivo,
+				linea,
+				value,
+			},
+			CLAVE,
+		),
 		motor: "mct",
 		regla: "generic-token",
 		tipo: "secreto",
@@ -67,13 +70,16 @@ function finding(archivo: string, text: string, value: string): Finding {
 function binario(archivo: string): Finding {
 	return {
 		...finding("x", "x", "x"),
-		id: findingId({
-			motor: "mct",
-			regla: "binary-unknown",
-			archivo,
-			linea: 0,
-			value: "bin",
-		}),
+		id: findingId(
+			{
+				motor: "mct",
+				regla: "binary-unknown",
+				archivo,
+				linea: 0,
+				value: "bin",
+			},
+			CLAVE,
+		),
 		regla: "binary-unknown",
 		tipo: "binario",
 		archivo,
@@ -118,7 +124,7 @@ async function sembrar(): Promise<Finding[]> {
 	await writeFile(
 		join(raiz, "findings.json"),
 		JSON.stringify({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			mctVersion: "0.0.0",
 			gitleaksVersion: "8.30.1",
 			generadoEn: T0,
@@ -168,6 +174,8 @@ async function sinRastros() {
 	expect(tmp.filter((n) => n.startsWith("sanitize-"))).toEqual([]);
 }
 
+let CLAVE: Uint8Array;
+
 beforeEach(async () => {
 	base = await mkdtemp(join(tmpdir(), "mct-t19i-"));
 	raiz = join(base, ".mct");
@@ -177,6 +185,7 @@ beforeEach(async () => {
 		adapter: "node",
 		now: () => T0,
 	});
+	CLAVE = await leerClave(raiz);
 	work = join(raiz, "work");
 });
 

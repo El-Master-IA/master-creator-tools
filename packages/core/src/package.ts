@@ -12,20 +12,31 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { genericAdapter } from "@mct/adapter-generic/index";
 import { n8nAdapter } from "@mct/adapter-n8n/index";
 import { findRegistryIssues, nodeAdapter } from "@mct/adapter-node/index";
+import { pythonAdapter } from "@mct/adapter-python/index";
+import { pickPythonImage } from "@mct/adapter-python/verify";
+import { staticAdapter } from "@mct/adapter-static/index";
 import { MctError } from "@mct/contract/errors";
-import type { Adapter, Change, Finding, Workspace } from "@mct/contract/types";
+import type {
+	Adapter,
+	Analysis,
+	Change,
+	Finding,
+	Workspace,
+} from "@mct/contract/types";
 import {
 	binaryFindingId,
 	classifyContent,
 	HEAD_BYTES,
 } from "@mct/scanner/binary";
 import { loadDictionary } from "@mct/scanner/dictionary";
+import { leerClave } from "@mct/scanner/finding-id";
 import type { ScanGitleaksOptions } from "@mct/scanner/scan";
 import { scan } from "@mct/scanner/scan";
 import { stripMetadata } from "@mct/scanner/strip-metadata";
-import { renderRepo } from "@mct/templates/render";
+import { type RepoInput, renderRepo } from "@mct/templates/render";
 import { verifyApproval } from "./approval.js";
 import { hashTree } from "./hash.js";
 import { defaultDictionaryPath } from "./init-guards.js";
@@ -58,7 +69,63 @@ export interface StagePackageResult {
 	distSha256: string;
 }
 
-const ADAPTERS: readonly Adapter[] = [nodeAdapter, n8nAdapter];
+const ADAPTERS: readonly Adapter[] = [
+	nodeAdapter,
+	n8nAdapter,
+	pythonAdapter,
+	staticAdapter,
+	genericAdapter,
+];
+
+const TEST_FILE = /^(test_.*|.*_test).py$/;
+
+/** True if the tree has tests/, test/ or test_*.py / *_test.py files (PKG-006). */
+async function hasPythonTests(dir: string, depth = 0): Promise<boolean> {
+	if (depth > 6) return false;
+	for (const e of await readdir(dir, { withFileTypes: true })) {
+		if (e.isDirectory()) {
+			if (e.name === "tests" || e.name === "test") return true;
+			if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+			if (await hasPythonTests(join(dir, e.name), depth + 1)) return true;
+		} else if (e.isFile() && TEST_FILE.test(e.name)) return true;
+	}
+	return false;
+}
+
+/** CI data taken from the Analysis and the work tree (PKG-006). */
+async function ciData(
+	adapterId: string,
+	analysis: Analysis,
+	work: string,
+): Promise<NonNullable<RepoInput["ci"]>> {
+	if (adapterId !== "python") return {};
+	let pythonVersion = "3.13";
+	try {
+		const m = /^python:(3.d+)-slim/.exec(
+			pickPythonImage(analysis.requiresPython),
+		);
+		if (m?.[1]) pythonVersion = m[1];
+	} catch {
+		// verify blocks with version-python; the CI keeps the lowest pinned version.
+	}
+	const cmd = analysis.comandos.install;
+	const instalacion =
+		cmd === undefined
+			? "ninguna"
+			: cmd.includes("uv export")
+				? "uv"
+				: cmd.includes("-r requirements.txt")
+					? "requirements"
+					: analysis.gestor === "poetry"
+						? "poetry"
+						: "proyecto";
+	return {
+		pythonVersion,
+		instalacion,
+		tests: await hasPythonTests(work),
+		poetryLock: await exists(join(work, "poetry.lock")),
+	};
+}
 const STAGING = "dist.new";
 /** Files the project may already ship: the project copy wins over the template. */
 const PROJECT_WINS = (ruta: string): boolean =>
@@ -306,6 +373,7 @@ export function inheritStripped(
 	previos: readonly Finding[],
 	final: readonly Finding[],
 	stripped: ReadonlyMap<string, string>,
+	clave: Uint8Array,
 ): Finding[] {
 	const donors = new Map<string, Finding>();
 	for (const f of previos) {
@@ -319,7 +387,9 @@ export function inheritStripped(
 		}
 		const original = stripped.get(f.archivo);
 		if (original === undefined) return f;
-		const donor = donors.get(binaryFindingId(f.regla, f.archivo, original));
+		const donor = donors.get(
+			binaryFindingId(f.regla, f.archivo, original, clave),
+		);
 		if (donor === undefined) return f;
 		return {
 			...f,
@@ -454,7 +524,7 @@ async function readPrevious(raiz: string): Promise<Finding[]> {
 	if (
 		parsed === null ||
 		typeof parsed !== "object" ||
-		obj.schemaVersion !== 1 ||
+		obj.schemaVersion !== 2 ||
 		!Array.isArray(obj.hallazgos)
 	) {
 		throw invalido("findings.json trae una forma o schemaVersion inválidos");
@@ -548,6 +618,8 @@ export async function stagePackage(
 			const plantillas: Change[] = [];
 			for (const f of renderRepo({
 				hints: adapter.packageHints(analysis),
+				adaptador: adapter.id,
+				ci: await ciData(adapter.id, analysis, ws.work),
 				titular: options.holder,
 				nombre,
 				anio: options.year,
@@ -574,7 +646,12 @@ export async function stagePackage(
 				post.digests,
 				new Set(changes.flatMap((c) => (c.tipo === "editar" ? [c.ruta] : []))),
 			);
-			const scanned = inheritStripped(previos, inherited, stripped);
+			const scanned = inheritStripped(
+				previos,
+				inherited,
+				stripped,
+				await leerClave(raiz),
+			);
 			abiertos = scanned.filter((h) => h.estado === "abierto").length;
 
 			await rm(ws.dist, { recursive: true, force: true });

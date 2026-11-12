@@ -20,8 +20,11 @@ import {
 	relative,
 	resolve,
 } from "node:path";
+import { genericAdapter } from "@mct/adapter-generic/index";
 import { n8nAdapter } from "@mct/adapter-n8n/index";
 import { nodeAdapter } from "@mct/adapter-node/index";
+import { pythonAdapter } from "@mct/adapter-python/index";
+import { staticAdapter } from "@mct/adapter-static/index";
 import { MctError } from "@mct/contract/errors";
 import type { Adapter, Workspace } from "@mct/contract/types";
 import ignore from "ignore";
@@ -52,7 +55,13 @@ export const LIMITES = {
 
 export type Limites = { -readonly [K in keyof typeof LIMITES]: number };
 
-export type InitType = "n8n" | "node" | "auto";
+export type InitType =
+	| "n8n"
+	| "node"
+	| "python"
+	| "estatico"
+	| "generico"
+	| "auto";
 
 export interface InitAviso {
 	mensaje: string;
@@ -141,7 +150,9 @@ const MSG = {
 		globMuchos: "Un glob de exclude se expande a demasiadas alternativas.",
 		accionGlob: "Usa globs relativos al origen y sin ..",
 		tipoNo: "El origen no coincide con el tipo pedido o no se reconoce.",
-		accionTipo: "Usa --type n8n o --type node según el origen.",
+		accionTipo:
+			"Usa --type n8n, node, python, estatico o generico según el origen.",
+		ambiguaAccion: "Repite con --type estatico o --type node.",
 		gitignoreEnlace: ".gitignore del destino es un enlace; no se escribe.",
 		cortado: "Init interrumpido. El destino quedó como estaba.",
 		previoNo: "No se pudo apartar el workspace existente; no se tocó.",
@@ -195,7 +206,9 @@ const MSG = {
 		accionGlob: "Use globs relative to the source and without ..",
 		tipoNo:
 			"The source does not match the requested type or is not recognized.",
-		accionTipo: "Use --type n8n or --type node to match the source.",
+		accionTipo:
+			"Use --type n8n, node, python, estatico or generico to match the source.",
+		ambiguaAccion: "Run again with --type estatico or --type node.",
 		gitignoreEnlace: "The destination .gitignore is a link; not written.",
 		cortado: "Init interrupted. The destination is as it was.",
 		previoNo:
@@ -421,7 +434,12 @@ class Planner {
 			for (const name of names) {
 				const lower = name.toLowerCase();
 				if (ALWAYS_SKIP.has(lower)) continue;
-				if (dir.rel === "" && lower === "mct.config.json") continue;
+				if (
+					dir.rel === "" &&
+					(lower === "mct.config.json" || lower === "decisiones.json")
+				) {
+					continue;
+				}
 				const rel = dir.rel === "" ? name : `${dir.rel}/${name}`;
 				const abs = join(dir.abs, name);
 				let st: Stats;
@@ -671,28 +689,150 @@ async function assertGitignoreWritable(dest: string, m: Msg): Promise<void> {
 	}
 }
 
+const BY_ID: Readonly<Record<string, Adapter>> = {
+	n8n: n8nAdapter,
+	node: nodeAdapter,
+	python: pythonAdapter,
+	estatico: staticAdapter,
+	generico: genericAdapter,
+};
+const AUTO_ORDER: readonly Adapter[] = [
+	n8nAdapter,
+	nodeAdapter,
+	pythonAdapter,
+	staticAdapter,
+	genericAdapter,
+];
+const BYTES_SKIP = new Set(["node_modules", ".git"]);
+const EXT_OF: Readonly<Record<string, readonly string[]>> = {
+	n8n: [".json"],
+	node: [".js", ".mjs", ".cjs", ".ts"],
+	python: [".py"],
+	estatico: [".html", ".htm"],
+};
+
+/** Bytes per lowercase extension under `root` (tie-break of DET-001). */
+async function bytesByExt(root: string): Promise<Map<string, number>> {
+	const out = new Map<string, number>();
+	const stack = [root];
+	while (stack.length > 0) {
+		const dir = stack.pop() as string;
+		let entries: import("node:fs").Dirent[];
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const e of entries) {
+			const abs = join(dir, e.name);
+			if (e.isDirectory()) {
+				if (!BYTES_SKIP.has(e.name)) stack.push(abs);
+			} else if (e.isFile()) {
+				const dot = e.name.lastIndexOf(".");
+				if (dot < 0) continue;
+				const ext = e.name.slice(dot).toLowerCase();
+				try {
+					out.set(ext, (out.get(ext) ?? 0) + (await lstat(abs)).size);
+				} catch {
+					// unreadable file: counts as 0 bytes
+				}
+			}
+		}
+	}
+	return out;
+}
+
+function languageBytes(id: string, bytes: Map<string, number>): number {
+	const own = EXT_OF[id];
+	let total = 0;
+	if (own !== undefined) {
+		for (const ext of own) total += bytes.get(ext) ?? 0;
+		return total;
+	}
+	// generico: the language of everything the other adapters do not claim.
+	const claimed = new Set(Object.values(EXT_OF).flat());
+	for (const [ext, n] of bytes) if (!claimed.has(ext)) total += n;
+	return total;
+}
+
+/** EXPERIENCE.md: ambiguous detection (DET-001). Only ids and numbers, never content. */
+function ambiguousText(
+	lang: Lang,
+	winner: string,
+	wc: number,
+	nc: number,
+): string {
+	const site = winner === "estatico";
+	if (lang === "es") {
+		const que = site ? "un sitio estático" : "un proyecto python";
+		const hay = site ? "index.html" : "archivos .py";
+		return `No sé si es ${que} (confianza ${wc}) o un proyecto node (${nc}): hay ${hay} y package.json. No copié nada. Repite con --type ${winner} o --type node.`;
+	}
+	const what = site ? "a static site" : "a python project";
+	const has = site ? "index.html" : ".py files";
+	return `Cannot tell whether this is ${what} (confidence ${wc}) or a node project (${nc}): there is ${has} and package.json. Nothing was copied. Run again with --type ${winner} or --type node.`;
+}
+
 async function chooseAdapter(
 	work: string,
 	type: InitType,
 	isFile: boolean,
 	m: Msg,
+	lang: Lang,
 ): Promise<{ adapter: Adapter; confianza: number }> {
-	const candidates: Adapter[] =
-		type === "n8n"
-			? [n8nAdapter]
-			: type === "node"
-				? [nodeAdapter]
-				: [n8nAdapter, nodeAdapter];
-	let best: { adapter: Adapter; confianza: number } | null = null;
+	const candidates: readonly Adapter[] =
+		type === "auto"
+			? isFile
+				? [n8nAdapter]
+				: AUTO_ORDER
+			: [BY_ID[type] as Adapter];
+	const scored: { adapter: Adapter; confianza: number }[] = [];
 	for (const adapter of candidates) {
-		const confianza = await adapter.detect(work);
-		if (confianza > 0 && (best === null || confianza > best.confianza)) {
-			best = { adapter, confianza };
+		scored.push({ adapter, confianza: await adapter.detect(work) });
+	}
+	let best: { adapter: Adapter; confianza: number } | null = null;
+	for (const c of scored) {
+		if (c.confianza > 0 && (best === null || c.confianza > best.confianza)) {
+			best = c;
 		}
 	}
 	// A single .json is an n8n export only if its real shape says so.
 	if (best === null || (isFile && best.adapter.id !== "n8n")) {
 		throw fail("VALIDACION", m.tipoNo, m.accionTipo);
+	}
+	const top = best.confianza;
+	const tied = scored.filter((c) => Math.abs(c.confianza - top) < 1e-9);
+	if (tied.length > 1) {
+		const bytes = await bytesByExt(work);
+		best = tied.reduce((a, b) =>
+			languageBytes(b.adapter.id, bytes) > languageBytes(a.adapter.id, bytes)
+				? b
+				: a,
+		);
+	}
+	if (type === "auto") {
+		const node = scored.find((c) => c.adapter.id === "node");
+		const byFiles =
+			best.adapter.id === "python" && Math.abs(best.confianza - 0.35) < 1e-9;
+		if (
+			node !== undefined &&
+			node.confianza > 0 &&
+			(best.adapter.id === "estatico" || byFiles) &&
+			node.confianza >= best.confianza - 0.15 - 1e-9
+		) {
+			throw fail(
+				"VALIDACION",
+				ambiguousText(lang, best.adapter.id, best.confianza, node.confianza),
+				m.ambiguaAccion,
+				{
+					motivo: "deteccion-ambigua",
+					candidatos: [best, node].map((c) => ({
+						adapter: c.adapter.id,
+						confianza: c.confianza,
+					})),
+				},
+			);
+		}
 	}
 	return best;
 }
@@ -909,6 +1049,7 @@ async function initCore(
 			type,
 			!origin.dir,
 			m,
+			lang,
 		);
 		const workSha256 = await hashTree(ws.work);
 		stopIfAborted();

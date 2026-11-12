@@ -1,0 +1,25 @@
+{
+	"checks": [
+		{
+			"id": "gitleaks",
+			"estado": "falla",
+			"mensaje": "falta gitleaks",
+			"accion": "mct doctor --install-gitleaks"
+		},
+		{
+			"id": "docker",
+			"estado": "falla",
+			"mensaje": "Docker local no responde",
+			"accion": "Instala Docker o configura verify.remoto"
+		},
+		{ "id": "ssh", "estado": "aviso", "mensaje": "sin remoto" },
+		{
+			"id": "github",
+			"estado": "falla",
+			"mensaje": "falta la credencial de GitHub",
+			"accion": "gh auth login"
+		},
+		{ "id": "permisos", "estado": "ok", "mensaje": "sin diccionario sensible" }
+	],
+	"siguiente": "mct doctor --install-gitleaks"
+}

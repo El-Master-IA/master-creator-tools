@@ -662,6 +662,8 @@ describe("etapa package: re-scan y contenido de dist", {
 	});
 });
 
+const CLAVE_PRUEBA = Buffer.alloc(32, 7);
+
 describe("PKG-003 decisiones de binarios con metadatos limpiados", () => {
 	const base = {
 		motor: "mct",
@@ -675,7 +677,7 @@ describe("PKG-003 decisiones de binarios con metadatos limpiados", () => {
 	const original = "1".repeat(64);
 	const aceptado = {
 		...base,
-		id: binaryFindingId("binary-image", "img/foto.png", original),
+		id: binaryFindingId("binary-image", "img/foto.png", original, CLAVE_PRUEBA),
 		regla: "binary-image",
 		archivo: "img/foto.png",
 		estado: "aceptado",
@@ -702,6 +704,7 @@ describe("PKG-003 decisiones de binarios con metadatos limpiados", () => {
 				["img/foto.png", original],
 				["img/otra.png", original],
 			]),
+			CLAVE_PRUEBA,
 		);
 		expect(out.map((f) => f.estado)).toEqual([
 			"aceptado",
@@ -716,6 +719,7 @@ describe("PKG-003 decisiones de binarios con metadatos limpiados", () => {
 			[aceptado],
 			[abierto("b".repeat(64), "binary-image", "img/foto.png")],
 			new Map([["img/foto.png", "2".repeat(64)]]),
+			CLAVE_PRUEBA,
 		);
 		expect(out[0]?.estado).toBe("abierto");
 	});
@@ -725,6 +729,7 @@ describe("PKG-003 decisiones de binarios con metadatos limpiados", () => {
 			[aceptado],
 			[abierto("b".repeat(64), "binary-image", "img/foto.png")],
 			new Map(),
+			CLAVE_PRUEBA,
 		);
 		expect(out[0]?.estado).toBe("abierto");
 	});
@@ -738,6 +743,7 @@ describe("PKG-003 decisiones de binarios con metadatos limpiados", () => {
 			[aceptado],
 			[q],
 			new Map([["img/foto.png", original]]),
+			CLAVE_PRUEBA,
 		);
 		expect(out[0]?.estado).toBe("abierto");
 	});

@@ -95,6 +95,22 @@ const RULES: readonly Rule[] = [
 	},
 ];
 
+const BUNDLERS = [
+	"vite",
+	"next",
+	"nuxt",
+	"webpack",
+	"parcel",
+	"rollup",
+	"esbuild",
+	"astro",
+	"svelte",
+	"@sveltejs/kit",
+	"react-scripts",
+	"@remix-run/dev",
+	"gatsby",
+];
+
 interface PackageJson {
 	name?: string;
 	main?: string;
@@ -475,16 +491,36 @@ function withEol(text: string, original: string): string {
 
 const STRIPPED_FIELDS = ["author", "repository", "homepage", "bugs"] as const;
 
-export const nodeAdapter: Adapter = {
+/** These adapters always verify: the narrower type spares callers a null check. */
+export const nodeAdapter: Omit<Adapter, "verifyCommand"> & {
+	verifyCommand(a: Analysis): VerifySpec;
+} = {
 	id: "node",
 
 	async detect(dir: string): Promise<number> {
 		const pkg = await readPackage(dir);
 		if (pkg === null) return 0;
+		const runnable = Boolean(pkg.scripts?.start || pkg.main || pkg.bin);
+		const locked = await hasLockfile(dir);
 		let score = 0.5;
-		if (await hasLockfile(dir)) score += 0.2;
-		if (pkg.scripts?.start || pkg.main || pkg.bin) score += 0.2;
-		return Math.min(score, 0.9);
+		if (locked) score += 0.2;
+		if (runnable) score += 0.2;
+		score = Math.min(score, 0.9);
+		// DET-001: a package.json with only tooling is not a node project (0.3)...
+		// (kept at 0.7 when a lockfile exists: NODE-002 test, see C08 report).
+		if (
+			!locked &&
+			!runnable &&
+			Object.keys(pkg.dependencies ?? {}).length === 0
+		) {
+			score = 0.3;
+		}
+		// ...unless it builds or uses a known bundler/framework (at least 0.6).
+		const all = { ...pkg.dependencies, ...pkg.devDependencies };
+		if (pkg.scripts?.build || BUNDLERS.some((b) => b in all)) {
+			score = Math.max(score, 0.6);
+		}
+		return score;
 	},
 
 	analyze: analyzeProject,

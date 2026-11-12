@@ -11,7 +11,7 @@ import {
 	createContext,
 	type Lang,
 } from "../output.js";
-import { register as flow, setFlowDecisor } from "./flow.js";
+import { register as flow, setFlowDecisor, TIPOS } from "./flow.js";
 import { register as licenses } from "./licenses.js";
 import { register as pack } from "./package.js";
 import { register as publish } from "./publish.js";
@@ -21,10 +21,17 @@ const TEXT = {
 	es: {
 		desc: "encadena init → scan → sanitize → licenses → package → verify → publish",
 		dest: "carpeta que contendrá .mct/",
-		type: "tipo de proyecto (n8n, node o auto)",
+		type: "tipo de proyecto (n8n, node, python, estatico, generico o auto)",
+		decisiones:
+			"archivo de decisiones para sanitize (falso-positivo o reemplazar)",
+		autoFixtures: "marca datos de prueba en rutas de test (exige --confirmo)",
+		confirmo: "sha256 de la lista de auto-fixtures que ya viste",
 		repo: "repo de destino owner/nombre (sin él se detiene antes de publish)",
 		dryRun: "corre publish --dry-run al final (necesita --repo)",
-		tipoMal: "--type debe ser n8n, node o auto",
+		tipoMal: "--type debe ser n8n, node, python, estatico, generico o auto",
+		autoSinConfirmo:
+			"--auto-fixtures necesita --confirmo <sha256> (la lista se obtiene antes con mct sanitize --auto-fixtures --dry-run --json)",
+		confirmoSinAuto: "--confirmo solo se usa junto con --auto-fixtures",
 		dryRunSinRepo: "--dry-run necesita --repo <owner/nombre>",
 		accionRepo: "Corre: mct run <origen> --repo <owner/nombre> --dry-run",
 		otroOrigen:
@@ -44,10 +51,16 @@ const TEXT = {
 	en: {
 		desc: "chain init → scan → sanitize → licenses → package → verify → publish",
 		dest: "folder that will hold .mct/",
-		type: "project type (n8n, node or auto)",
+		type: "project type (n8n, node, python, estatico, generico or auto)",
+		decisiones: "decisions file for sanitize (false-positive or replace)",
+		autoFixtures: "mark test data in test paths (needs --confirmo)",
+		confirmo: "sha256 of the auto-fixtures list you already saw",
 		repo: "target repo owner/name (without it, stops before publish)",
 		dryRun: "run publish --dry-run at the end (needs --repo)",
-		tipoMal: "--type must be n8n, node or auto",
+		tipoMal: "--type must be n8n, node, python, estatico, generico or auto",
+		autoSinConfirmo:
+			"--auto-fixtures needs --confirmo <sha256> (get the list first with mct sanitize --auto-fixtures --dry-run --json)",
+		confirmoSinAuto: "--confirmo is only used together with --auto-fixtures",
 		dryRunSinRepo: "--dry-run needs --repo <owner/name>",
 		accionRepo: "Run: mct run <source> --repo <owner/name> --dry-run",
 		otroOrigen:
@@ -85,7 +98,12 @@ export interface RunOptions {
 	origen: string;
 	/** Folder that will hold `.mct/`; default: the parent of `ctx.workspace`. */
 	dest?: string;
-	type?: "n8n" | "node" | "auto";
+	type?: (typeof TIPOS)[number];
+	/** `--decisiones` for the sanitize stage (SAN-012). */
+	decisiones?: string;
+	/** `--auto-fixtures --confirmo <sha256>` for the sanitize stage (SAN-014). */
+	autoFixtures?: boolean;
+	confirmo?: string;
 	/** `owner/name`. Without it the pipeline stops before `publish` (exit 0). */
 	repo?: string;
 	/** Runs `publish --dry-run` at the end; requires `repo`. */
@@ -151,6 +169,16 @@ function argvOf(
 				o.repo ?? "",
 				...(repoDryRun ? ["--dry-run"] : []),
 			];
+		case "sanitize":
+			return [
+				"sanitize",
+				...(o.decisiones === undefined
+					? []
+					: ["--decisiones", resolve(o.decisiones)]),
+				...(o.autoFixtures === true && o.confirmo !== undefined
+					? ["--auto-fixtures", "--confirmo", o.confirmo]
+					: []),
+			];
 		default:
 			return [etapa];
 	}
@@ -203,8 +231,14 @@ export async function runPipeline(
 	o: RunOptions,
 ): Promise<RunResult> {
 	const t = TEXT[ctx.lang as Lang];
-	if (o.type !== undefined && !["n8n", "node", "auto"].includes(o.type)) {
+	if (o.type !== undefined && !TIPOS.includes(o.type)) {
 		throw new MctError("VALIDACION", t.tipoMal);
+	}
+	if (o.autoFixtures === true && o.confirmo === undefined) {
+		throw new MctError("VALIDACION", t.autoSinConfirmo);
+	}
+	if (o.autoFixtures !== true && o.confirmo !== undefined) {
+		throw new MctError("VALIDACION", t.confirmoSinAuto);
 	}
 	const repo = o.repo === undefined || o.repo === "" ? undefined : o.repo;
 	if (o.dryRun === true && repo === undefined) {
@@ -357,19 +391,33 @@ export function register(program: Command): void {
 		.option("--dest <dir>", TEXT.es.dest)
 		.option("--type <type>", TEXT.es.type)
 		.option("--repo <owner/nombre>", TEXT.es.repo)
+		.option("--decisiones <archivo>", TEXT.es.decisiones)
+		.option("--auto-fixtures", TEXT.es.autoFixtures)
+		.option("--confirmo <sha256>", TEXT.es.confirmo)
 		.option("--dry-run", TEXT.es.dryRun)
 		.action(
 			async (
 				origen: string,
-				opts: { dest?: string; type?: string; repo?: string; dryRun?: boolean },
+				opts: {
+					dest?: string;
+					type?: string;
+					repo?: string;
+					decisiones?: string;
+					autoFixtures?: boolean;
+					confirmo?: string;
+					dryRun?: boolean;
+				},
 			) => {
 				const ctx = contextOf(program);
 				const result = await runPipeline(ctx, {
 					origen,
 					...(opts.dest !== undefined && { dest: opts.dest }),
 					...(opts.type !== undefined && {
-						type: opts.type as "n8n" | "node" | "auto",
+						type: opts.type as (typeof TIPOS)[number],
 					}),
+					...(opts.decisiones !== undefined && { decisiones: opts.decisiones }),
+					...(opts.autoFixtures === true && { autoFixtures: true }),
+					...(opts.confirmo !== undefined && { confirmo: opts.confirmo }),
 					...(opts.repo !== undefined && { repo: opts.repo }),
 					...(opts.dryRun === true && { dryRun: true }),
 				});

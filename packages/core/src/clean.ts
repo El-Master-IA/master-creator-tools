@@ -1,5 +1,5 @@
 import { lstat, readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { MctError } from "@mct/contract/errors";
 import { readState, withLock } from "./workspace.js";
 
@@ -75,7 +75,7 @@ async function countFiles(dir: string, m: (typeof MSG)[Lang]): Promise<number> {
 /**
  * CLN-001 / SAN-005. Deletes the whole workspace (quarantine included) only if
  * it has a valid state.json. Never touches `<dest>/mct.config.json`, which
- * lives outside `raiz`. Fails closed: any doubt is an error and nothing is deleted.
+ * lives outside `raiz`; it does delete `<dest>/decisiones.json` (SAN-015). Fails closed: any doubt is an error and nothing is deleted.
  */
 export async function cleanWorkspace(opts: CleanOptions): Promise<CleanResult> {
 	const m = MSG[opts.lang ?? "es"];
@@ -131,5 +131,22 @@ export async function cleanWorkspace(opts: CleanOptions): Promise<CleanResult> {
 			});
 		}
 	});
+	// SAN-015: the decisions file lives in <dest>/ (outside .mct); it goes with the workspace.
+	if (basename(raiz) === ".mct") {
+		const decisiones = join(dirname(raiz), "decisiones.json");
+		try {
+			if (!(await lstat(decisiones)).isDirectory()) {
+				await rm(decisiones, { force: true });
+			}
+		} catch (cause) {
+			if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw new MctError("INTERNO", m.fallo, {
+					cause,
+					etapa: "clean",
+					accion: m.accion,
+				});
+			}
+		}
+	}
 	return { borrado: raiz, archivos };
 }

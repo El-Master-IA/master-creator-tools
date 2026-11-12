@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -174,6 +175,8 @@ export async function buildFixture(name: string): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), `mct-fixture-${fixtureName}-`));
 	await writeAll(join(root, "work"), work);
 	await writeAll(join(root, "quarantine"), quarantine);
+	// Clave HMAC del workspace falso (SCAN-015): `scan` la lee de `<raiz>/clave`.
+	await writeFile(join(root, "clave"), randomBytes(32));
 	await writeFile(
 		join(root, "truth.json"),
 		`${JSON.stringify(truth, null, 2)}\n`,

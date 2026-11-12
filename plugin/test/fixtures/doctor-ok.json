@@ -1,0 +1,14 @@
+{
+	"checks": [
+		{ "id": "gitleaks", "estado": "ok", "mensaje": "gitleaks 8.30.0" },
+		{ "id": "docker", "estado": "ok", "mensaje": "Docker local responde" },
+		{ "id": "ssh", "estado": "aviso", "mensaje": "sin remoto" },
+		{
+			"id": "github",
+			"estado": "ok",
+			"mensaje": "credencial de GitHub presente"
+		},
+		{ "id": "permisos", "estado": "ok", "mensaje": "sin diccionario sensible" }
+	],
+	"siguiente": "mct init <origen>"
+}

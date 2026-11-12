@@ -235,6 +235,21 @@ module.exports = token;
 		await access(join(ws(), "approval.json"));
 	});
 
+	it("SAN-002 CUANDO el motivo contiene el valor del hallazgo (en mayúsculas) EL SISTEMA DEBE rechazarlo con VALIDACION sin firmar ni repetir el valor", async () => {
+		await initAndScan();
+		useScript({
+			selects: ["falso-positivo"],
+			texts: [`es el mismo ${TOKEN.toUpperCase()} de siempre`],
+			asked: [],
+		});
+		const { io, out, err } = makeIo(true);
+		const code = await runCli(["sanitize", "--workspace", ws()], io);
+		expect(code).toBe(2);
+		expect(out.join("") + err.join("")).not.toContain(TOKEN);
+		expect(out.join("") + err.join("")).not.toContain(TOKEN.toUpperCase());
+		await expect(access(join(ws(), "approval.json"))).rejects.toThrow();
+	});
+
 	it("SAN-002 CUANDO la persona elige abortar EL SISTEMA DEBE salir con CANCELADO sin firmar", async () => {
 		await initAndScan();
 		useScript({ selects: ["abortar"], texts: [], asked: [] });

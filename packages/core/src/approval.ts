@@ -21,6 +21,10 @@ export interface Approval {
 	aprobadoEn: string;
 	mctVersion: string;
 	gitleaksVersion: string;
+	/** SHA-256 of each `--decisiones` file applied since the last approval (SAN-012). */
+	decisionesSha256: string[];
+	/** SHA-256 of each confirmed `--auto-fixtures` list (SAN-014). */
+	autoFixturesSha256: string[];
 }
 
 export interface SignInput {
@@ -32,6 +36,8 @@ export interface SignInput {
 	mctVersion: string;
 	now?: () => string;
 	user?: () => string;
+	decisionesSha256?: readonly string[];
+	autoFixturesSha256?: readonly string[];
 }
 
 /** Atomic write (temp file + rename), 0600; the caller holds the lock. */
@@ -88,6 +94,8 @@ export async function signApproval(input: SignInput): Promise<Approval> {
 		aprobadoEn: (input.now ?? (() => new Date().toISOString()))(),
 		mctVersion: input.mctVersion,
 		gitleaksVersion: input.gitleaksVersion,
+		decisionesSha256: [...(input.decisionesSha256 ?? [])],
+		autoFixturesSha256: [...(input.autoFixturesSha256 ?? [])],
 	};
 	await writeFileAtomic(
 		join(input.raiz, APPROVAL_FILE),
@@ -139,7 +147,21 @@ export async function readApproval(raiz: string): Promise<Approval> {
 	) {
 		throw desactualizada("forma");
 	}
-	return v as unknown as Approval;
+	// 0.1.x approvals have neither list: read as empty.
+	const listas = [v.decisionesSha256 ?? [], v.autoFixturesSha256 ?? []];
+	for (const l of listas) {
+		if (
+			!Array.isArray(l) ||
+			!l.every((x) => typeof x === "string" && SHA256.test(x))
+		) {
+			throw desactualizada("forma");
+		}
+	}
+	return {
+		...(v as unknown as Approval),
+		decisionesSha256: listas[0] as string[],
+		autoFixturesSha256: listas[1] as string[],
+	};
 }
 
 /**

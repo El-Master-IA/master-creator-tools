@@ -5,6 +5,7 @@ import { nodeAdapter } from "@mct/adapter-node/index";
 import { MctError } from "@mct/contract/errors";
 import type { Adapter } from "@mct/contract/types";
 import { loadDictionary } from "@mct/scanner/dictionary";
+import { leerClave } from "@mct/scanner/finding-id";
 import type { Runner } from "@mct/scanner/gitleaks";
 import { scan } from "@mct/scanner/scan";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -85,7 +86,7 @@ async function build(): Promise<void> {
 	await writeState(raiz, state);
 	await writeFile(
 		join(raiz, "findings.json"),
-		JSON.stringify({ schemaVersion: 1, hallazgos: [] }),
+		JSON.stringify({ schemaVersion: 2, hallazgos: [] }),
 	);
 	await writeFile(join(raiz, "license-report.json"), "[]");
 	await writeFile(
@@ -332,6 +333,7 @@ describe("PUB-008 publish-state and --resume", () => {
 		const tmp = join(base, "probe-tmp");
 		await mkdir(tmp, { recursive: true });
 		const res = await scan({
+			clave: await leerClave(raiz),
 			work: probe,
 			quarantine: join(tmp, "sin-cuarentena"),
 			rules: adapter.rules(),
@@ -347,7 +349,7 @@ describe("PUB-008 publish-state and --resume", () => {
 		await writeFile(
 			join(raiz, "findings.json"),
 			JSON.stringify({
-				schemaVersion: 1,
+				schemaVersion: 2,
 				hallazgos: res.hallazgos.map((h) => ({
 					...h,
 					estado: "aceptado",

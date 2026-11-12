@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MctError } from "@mct/contract/errors";
 import type { Change, Finding } from "@mct/contract/types";
-import { findingId } from "@mct/scanner/finding-id";
+import { findingId, leerClave } from "@mct/scanner/finding-id";
 import { detectPii } from "@mct/scanner/pii";
 import { detectSecrets } from "@mct/scanner/secrets";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,7 +59,7 @@ function mkFinding(
 ): Finding {
 	const [linea, columna] = lineCol(text, text.indexOf(value));
 	return {
-		id: findingId({ motor: "mct", regla, archivo, linea, value }),
+		id: findingId({ motor: "mct", regla, archivo, linea, value }, CLAVE),
 		motor: "mct",
 		regla,
 		tipo: "secreto",
@@ -75,13 +75,16 @@ function mkFinding(
 
 function binFinding(archivo: string): Finding {
 	return {
-		id: findingId({
-			motor: "mct",
-			regla: "binary-unknown",
-			archivo,
-			linea: 0,
-			value: "bin",
-		}),
+		id: findingId(
+			{
+				motor: "mct",
+				regla: "binary-unknown",
+				archivo,
+				linea: 0,
+				value: "bin",
+			},
+			CLAVE,
+		),
 		motor: "mct",
 		regla: "binary-unknown",
 		tipo: "binario",
@@ -99,7 +102,7 @@ async function writeFindings(hallazgos: Finding[]) {
 	await writeFile(
 		join(raiz, "findings.json"),
 		JSON.stringify({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			mctVersion: "0.0.0",
 			gitleaksVersion: "8.30.1",
 			generadoEn: T0,
@@ -146,13 +149,16 @@ function fakeRescan(valores: string[]): SanitizeOptions["rescan"] {
 							...mkFinding(rel, text.slice(0, at) + v, v, zona),
 							linea,
 							columna,
-							id: findingId({
-								motor: "mct",
-								regla: "generic-token",
-								archivo: rel,
-								linea,
-								value: v,
-							}),
+							id: findingId(
+								{
+									motor: "mct",
+									regla: "generic-token",
+									archivo: rel,
+									linea,
+									value: v,
+								},
+								CLAVE,
+							),
 						});
 						at = text.indexOf(v, at + v.length);
 					}
@@ -210,6 +216,8 @@ function opts(
 const sha = (b: Buffer | string) =>
 	createHash("sha256").update(b).digest("hex");
 
+let CLAVE: Uint8Array;
+
 beforeEach(async () => {
 	base = await mkdtemp(join(tmpdir(), "mct-t19-"));
 	raiz = join(base, ".mct");
@@ -219,6 +227,7 @@ beforeEach(async () => {
 		adapter: "node",
 		now: () => T0,
 	});
+	CLAVE = await leerClave(raiz);
 	work = join(raiz, "work");
 	quarantine = join(raiz, "quarantine");
 });
@@ -726,13 +735,16 @@ describe("sanitize · con los detectores reales del escáner", () => {
 				for (const m of detectSecrets(text)) {
 					hallazgos.push({
 						...mkFinding(rel, "x", "x"),
-						id: findingId({
-							motor: "mct",
-							regla: m.rule,
-							archivo: rel,
-							linea: m.line,
-							value: m.value,
-						}),
+						id: findingId(
+							{
+								motor: "mct",
+								regla: m.rule,
+								archivo: rel,
+								linea: m.line,
+								value: m.value,
+							},
+							CLAVE,
+						),
 						regla: m.rule,
 						linea: m.line,
 						columna: m.column,
@@ -742,13 +754,16 @@ describe("sanitize · con los detectores reales del escáner", () => {
 				for (const m of detectPii(text)) {
 					hallazgos.push({
 						...mkFinding(rel, "x", "x"),
-						id: findingId({
-							motor: "mct",
-							regla: m.regla,
-							archivo: rel,
-							linea: m.linea,
-							value: text.slice(m.inicio, m.fin),
-						}),
+						id: findingId(
+							{
+								motor: "mct",
+								regla: m.regla,
+								archivo: rel,
+								linea: m.linea,
+								value: text.slice(m.inicio, m.fin),
+							},
+							CLAVE,
+						),
 						regla: m.regla,
 						tipo: "pii",
 						linea: m.linea,
@@ -851,13 +866,16 @@ describe("sanitize · revisión T19 (doble motor, aislados)", () => {
 		const g: Finding = {
 			...mkFinding("cfg.env.ts", text, match, "work", "generic-api-key"),
 			motor: "gitleaks",
-			id: findingId({
-				motor: "gitleaks",
-				regla: "generic-api-key",
-				archivo: "cfg.env.ts",
-				linea: 1,
-				value: match,
-			}),
+			id: findingId(
+				{
+					motor: "gitleaks",
+					regla: "generic-api-key",
+					archivo: "cfg.env.ts",
+					linea: 1,
+					value: match,
+				},
+				CLAVE,
+			),
 		};
 		const m = mkFinding("cfg.env.ts", text, SECRET, "work", "generic-api-key");
 		await writeFindings([g, m]);
@@ -916,13 +934,16 @@ describe("sanitize · arreglos de revisión T19 (valor, claves y solapes)", () =
 	): Finding => ({
 		...mkFinding(archivo, text, match, "work", regla),
 		motor: "gitleaks",
-		id: findingId({
-			motor: "gitleaks",
-			regla,
-			archivo,
-			linea: text.slice(0, text.indexOf(match)).split("\n").length,
-			value: match,
-		}),
+		id: findingId(
+			{
+				motor: "gitleaks",
+				regla,
+				archivo,
+				linea: text.slice(0, text.indexOf(match)).split("\n").length,
+				value: match,
+			},
+			CLAVE,
+		),
 	});
 	const run = async (
 		archivo: string,

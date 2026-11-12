@@ -10,13 +10,14 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { join, win32 } from "node:path";
-import { n8nAdapter } from "@mct/adapter-n8n/index";
-import { nodeAdapter } from "@mct/adapter-node/index";
+import { dirname, join, win32 } from "node:path";
 import { MctError, redactTokens } from "@mct/contract/errors";
 import type { Adapter, State } from "@mct/contract/types";
 import { loadDictionary } from "@mct/scanner/dictionary";
+import { leerClave } from "@mct/scanner/finding-id";
 import { type ScanGitleaksOptions, scan } from "@mct/scanner/scan";
+import { ADAPTERS } from "./adapters.js";
+import { VERIFY_AVISOS_FILE } from "./avisos.js";
 import {
 	CLONE_TIMEOUT_MS,
 	cloneGithub,
@@ -24,6 +25,7 @@ import {
 	resolveExecutable,
 	spawnRunner,
 } from "./clone.js";
+import { loadConfig } from "./config.js";
 import { type GithubClient, resolveGithubToken } from "./github.js";
 import { hashTree } from "./hash.js";
 import { defaultDictionaryPath } from "./init-guards.js";
@@ -60,7 +62,6 @@ const ENV_ALLOW = [
 	"TMPDIR",
 	"LANG",
 ] as const;
-const ADAPTERS: readonly Adapter[] = [nodeAdapter, n8nAdapter];
 
 export type PublishLang = "es" | "en";
 export type Paso =
@@ -668,6 +669,7 @@ async function scanRemote(
 		const g = opts.gitleaks ?? {};
 		const res = await scan({
 			work: dir,
+			clave: await leerClave(opts.raiz),
 			// Not the local quarantine: it never reaches the remote repo.
 			quarantine: join(tmpDir, "sin-cuarentena"),
 			rules: adapter.rules(),
@@ -999,4 +1001,117 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
 			throw error;
 		}
 	});
+}
+
+// ---- summary shown before asking the repo name (PUB-013) ----
+
+export interface ResumenDecision {
+	regla: string;
+	archivo: string;
+}
+
+export interface PublishResumen {
+	adaptador: string;
+	/** Findings resolved by `--decisiones` (SAN-012). */
+	porArchivo: ResumenDecision[];
+	/** Findings resolved by `--auto-fixtures` (SAN-014). */
+	porAutoFixtures: ResumenDecision[];
+	/** Notice keys: `licenses.sinGestor`, `verify.omitido`, `verify.poetrySinLock`, `verify.pipCheck`. */
+	avisos: string[];
+	/** Overrides accepted in `mct.config.json`, with their reason. */
+	overrides: { clave: string; motivo: string }[];
+}
+
+async function readLoose(path: string): Promise<unknown> {
+	try {
+		return JSON.parse(await readFile(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+const strings = (v: unknown): string[] =>
+	isObj(v) && Array.isArray(v.avisos)
+		? v.avisos.filter((x): x is string => typeof x === "string")
+		: [];
+
+/**
+ * Read-only: decisions by path, notices and accepted overrides of the workspace. Missing or
+ * malformed optional files mean "nothing to show" (the gates already ran); `via` absent is
+ * read as `tty` (datos.md), so it never counts here.
+ */
+export async function leerResumenPublish(
+	raiz: string,
+): Promise<PublishResumen> {
+	const state = await readLoose(join(raiz, "state.json"));
+	const f = await readLoose(join(raiz, "findings.json"));
+	const porArchivo: ResumenDecision[] = [];
+	const porAutoFixtures: ResumenDecision[] = [];
+	if (isObj(f) && Array.isArray(f.hallazgos)) {
+		for (const h of f.hallazgos as unknown[]) {
+			if (
+				!isObj(h) ||
+				typeof h.regla !== "string" ||
+				typeof h.archivo !== "string"
+			) {
+				continue;
+			}
+			if (h.estado === "abierto" || h.estado === "obsoleto") continue;
+			const item = { regla: h.regla, archivo: h.archivo };
+			if (h.via === "archivo") porArchivo.push(item);
+			else if (h.via === "auto-fixtures") porAutoFixtures.push(item);
+		}
+	}
+	const avisos: string[] = [];
+	const destino =
+		isObj(state) && isObj(state.verificado)
+			? state.verificado.destino
+			: undefined;
+	if (destino === "(omitido)") avisos.push("verify.omitido");
+	for (const a of strings(await readLoose(join(raiz, VERIFY_AVISOS_FILE)))) {
+		if (a !== "verify.compilar") avisos.push(a);
+	}
+	if (
+		strings(await readLoose(join(raiz, "license-avisos.json"))).includes(
+			"sin-gestor",
+		)
+	) {
+		avisos.push("licenses.sinGestor");
+	}
+	const overrides: { clave: string; motivo: string }[] = [];
+	const config = await loadConfig(dirname(raiz)).catch(
+		() => ({}) as Awaited<ReturnType<typeof loadConfig>>,
+	);
+	if (config.licenses?.sinLock !== undefined) {
+		overrides.push({
+			clave: "licenses.sinLock",
+			motivo: config.licenses.sinLock.motivo,
+		});
+	}
+	if (config.licenses?.gestorNoSoportado !== undefined) {
+		overrides.push({
+			clave: "licenses.gestorNoSoportado",
+			motivo: config.licenses.gestorNoSoportado.motivo,
+		});
+	}
+	const motivoVerify = config.verify?.motivo;
+	if (motivoVerify !== undefined) {
+		if (config.verify?.modo === "compilar") {
+			overrides.push({ clave: "verify.modo: compilar", motivo: motivoVerify });
+		}
+		if (config.verify?.ignorar !== undefined) {
+			overrides.push({
+				clave: `verify.ignorar: ${config.verify.ignorar.join(", ")}`,
+				motivo: motivoVerify,
+			});
+		}
+	}
+	return {
+		adaptador:
+			isObj(state) && typeof state.adapter === "string" ? state.adapter : "",
+		porArchivo,
+		porAutoFixtures,
+		avisos,
+		overrides,
+	};
 }

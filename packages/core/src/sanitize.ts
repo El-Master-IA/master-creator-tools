@@ -3,7 +3,7 @@ import type { Stats } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { MctError, redactTokens } from "@mct/contract/errors";
+import { MctError } from "@mct/contract/errors";
 import type {
 	Adapter,
 	Change,
@@ -11,15 +11,25 @@ import type {
 	Finding,
 	State,
 } from "@mct/contract/types";
-import { findingId, normalizeValue } from "@mct/scanner/finding-id";
+import { findingId, leerClave, normalizeValue } from "@mct/scanner/finding-id";
+import { maskValue } from "@mct/scanner/masking";
 import type { LicenseRow, ReportLang } from "@mct/templates/report";
 import { isMaskedFragment, renderReport } from "@mct/templates/report";
 import {
 	APPROVAL_FILE,
+	type Approval,
 	invalidateApproval,
+	readApproval,
 	signApproval,
 	writeFileAtomic,
 } from "./approval.js";
+import { esCandidato, huellaLista, MOTIVO_AUTO } from "./auto-fixtures.js";
+import {
+	type EntradaDecision,
+	leerArchivoDecisiones,
+	PLACEHOLDER,
+	validarMotivo,
+} from "./decisiones.js";
 import { hashTree } from "./hash.js";
 import { createLogger } from "./logger.js";
 import {
@@ -32,18 +42,16 @@ import {
 	writeState,
 } from "./workspace.js";
 
-export const FINDINGS_SCHEMA_VERSION = 1;
+export const FINDINGS_SCHEMA_VERSION = 2;
 export const FINDINGS_FILE = "findings.json";
 
 /** Review rounds before the gate stays closed (new findings can appear after a re-scan). */
 const MAX_RONDAS = 3;
 /** Longest value searched when locating a finding in its file. */
 const MAX_VALUE_CHARS = 8192;
-const MOTIVO_MIN = 10;
-const MOTIVO_MAX = 500;
 
 const SHA256 = /^[0-9a-f]{64}$/;
-const PLACEHOLDER = /^[A-Z][A-Z0-9_]{0,63}$/;
+export const APLICADO_FILE = "aplicado.json";
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const DIC_MASK = /\[dic:\d+\]/;
 const DECIDIDOS = new Set(["resuelto", "falso-positivo", "aceptado"]);
@@ -90,6 +98,16 @@ export interface SanitizeOptions {
 	adapter?: Pick<Adapter, "sanitize">;
 	autoPlaceholders?: boolean;
 	reopen?: string;
+	/** SAN-012: path of the decisions file (`--decisiones`). */
+	decisiones?: string;
+	/** SAN-014: `--auto-fixtures`; `confirmo` is the `--confirmo <sha256>` value. */
+	autoFixtures?: {
+		confirmo?: string;
+		/** With a TTY and no `confirmo`: shows the list and returns the person's answer. */
+		confirmar?: (lista: ListaAuto) => Promise<boolean>;
+	};
+	/** Dictionary terms: reference values for `validarMotivo` (SAN-002). Never stored. */
+	terminos?: readonly string[];
 	/** Ctrl+C: aborts, restores the workspace and rejects with INTERRUMPIDO (130). */
 	signal?: AbortSignal;
 	mctVersion?: string;
@@ -100,8 +118,41 @@ export interface SanitizeOptions {
 
 export interface SanitizeResult {
 	decididos: { resuelto: number; falsoPositivo: number; aceptado: number };
+	porVia: { tty: number; archivo: number; autoFixtures: number };
 	abiertos: number;
+	hallazgosAbiertos: HallazgoAbierto[];
 	aprobacion: { arbolSha256: string } | null;
+}
+
+/** SAN-013: an open finding as shown in `--json`. `fragmento` only for non-dictionary secrets. */
+export interface HallazgoAbierto {
+	id: string;
+	regla: string;
+	tipo: Finding["tipo"];
+	severidad: Finding["severidad"];
+	archivo: string;
+	linea: number;
+	fragmento?: string;
+}
+
+export interface CandidatoAuto {
+	id: string;
+	regla: string;
+	tipo: Finding["tipo"];
+	archivo: string;
+	linea: number;
+}
+
+export interface ListaAuto {
+	candidatos: CandidatoAuto[];
+	sha256: string;
+}
+
+/** Internal: stops `ejecutar` after the candidate list so the journal restores everything. */
+class ListaListo extends Error {
+	constructor(readonly lista: ListaAuto) {
+		super("lista");
+	}
 }
 
 function validacion(
@@ -180,8 +231,17 @@ function toFinding(
 		severidad: v.severidad as Finding["severidad"],
 		estado: v.estado as Finding["estado"],
 	};
-	for (const k of ["motivo", "decidio", "decididoEn"] as const) {
-		if (v[k] !== undefined) f[k] = str(k);
+	// Same key order the decisions are written in (motivo, via, decidio, decididoEn).
+	for (const k of ["motivo", "via", "decidio", "decididoEn"] as const) {
+		if (v[k] === undefined) continue;
+		if (k === "via") {
+			if (v.via !== "tty" && v.via !== "archivo" && v.via !== "auto-fixtures") {
+				mal("via");
+			}
+			f.via = v.via as NonNullable<Finding["via"]>;
+		} else {
+			f[k] = str(k);
+		}
 	}
 	return f;
 }
@@ -423,7 +483,7 @@ const sha256 = (t: string): string =>
  * so the span is the shortest one starting at (linea, columna) whose findingId equals
  * `h.id`: the same formula as scan, so a stale or foreign finding never matches.
  */
-function ubicar(text: string, h: Finding): Span | null {
+function ubicar(text: string, h: Finding, clave: Uint8Array): Span | null {
 	if (h.linea < 1 || h.columna < 1) return null;
 	let at = 0;
 	for (let n = 1; n < h.linea; n++) {
@@ -439,13 +499,16 @@ function ubicar(text: string, h: Finding): Span | null {
 		if (ultimo <= 32 || (ultimo >= 0xd800 && ultimo <= 0xdbff)) continue;
 		const valor = text.slice(inicio, fin);
 		if (normalizeValue(valor).length === 0) continue;
-		const id = findingId({
-			motor: h.motor,
-			regla: h.regla,
-			archivo: h.archivo,
-			linea: h.linea,
-			value: valor,
-		});
+		const id = findingId(
+			{
+				motor: h.motor,
+				regla: h.regla,
+				archivo: h.archivo,
+				linea: h.linea,
+				value: valor,
+			},
+			clave,
+		);
 		if (id === h.id) {
 			if (/private-key/i.test(h.regla)) {
 				// A key is replaced whole: BEGIN through its END, or nothing (fail closed).
@@ -529,51 +592,17 @@ const PEM_END = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 
 // ---------------------------------------------------------------- reasons and names
 
-const INVISIBLES = new RegExp(
-	[
-		"\\p{Cc}",
-		"\\p{Cf}",
-		"\\p{Cs}",
-		"\\p{Co}",
-		"\\p{Cn}",
-		"\\p{Zl}",
-		"\\p{Zp}",
-		"\\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000",
-		"\\u2800\\u3164\\u115F\\u1160\\uFFA0\\u180E\\u034F",
-		"\\uFE00-\\uFE0F",
-	]
-		.join("")
-		.replace(/^/, "[")
-		.concat("]"),
-	"u",
-);
-
-/** SAN-002: >= 10 visible characters, one line, no invisible characters, no token or value inside. */
-function validarMotivo(motivo: unknown, valor?: string): string {
-	if (typeof motivo !== "string") {
-		throw validacion(
-			"El motivo es obligatorio",
-			undefined,
-			"Escribe un motivo de al menos 10 caracteres",
-		);
+/** The action a finding was already decided with (an `obsoleto` is read from its reason). */
+function accionDecidida(
+	h: Finding,
+): "reemplazar" | "falso-positivo" | "aceptar" | null {
+	if (h.estado === "resuelto") return "reemplazar";
+	if (h.estado === "falso-positivo") return "falso-positivo";
+	if (h.estado === "aceptado") return "aceptar";
+	if (h.estado === "obsoleto") {
+		return h.motivo === undefined ? "reemplazar" : "falso-positivo";
 	}
-	if (INVISIBLES.test(motivo)) {
-		throw validacion("El motivo tiene caracteres invisibles o de control");
-	}
-	const limpio = motivo.trim();
-	const largo = Array.from(limpio).length;
-	if (largo < MOTIVO_MIN || largo > MOTIVO_MAX) {
-		throw validacion(
-			`El motivo debe tener entre ${MOTIVO_MIN} y ${MOTIVO_MAX} caracteres`,
-		);
-	}
-	if (redactTokens(limpio) !== limpio) {
-		throw validacion("El motivo parece contener un token");
-	}
-	if (valor !== undefined && valor.length >= 4 && limpio.includes(valor)) {
-		throw validacion("El motivo no puede contener el valor del hallazgo");
-	}
-	return limpio;
+	return null;
 }
 
 function nombreDeRegla(regla: string): string {
@@ -694,24 +723,40 @@ interface Salida {
 	eventos: { id: string; regla: string; evento: string }[];
 }
 
+function sinTty(): MctError {
+	return new MctError(
+		"PUERTA_BLOQUEADA",
+		"Sin terminal interactiva no se puede aprobar",
+		{
+			accion: "Corre mct sanitize desde una terminal",
+			etapa: "sanitize",
+			detalle: { motivo: "sin-tty" },
+		},
+	);
+}
+
+function validarEntrada(o: SanitizeOptions): void {
+	if (o.autoFixtures?.confirmo !== undefined) {
+		if (!SHA256.test(o.autoFixtures.confirmo)) {
+			throw validacion("--confirmo debe ser un sha256 de 64 caracteres hex");
+		}
+	}
+	// Prompts-only features still need a person at the terminal (SAN-004).
+	if (!o.tty && (o.autoPlaceholders === true || o.reopen !== undefined)) {
+		throw sinTty();
+	}
+}
+
 /**
- * Sanitize core (SAN-001/003/006, SCAN-008): applies decisions and the adapter `Change`s inside
- * `work/`, writes `.env.example`, re-scans with the injected function, signs `approval.json` when
- * nothing is open, and regenerates `report.html`. Transactional: any error or Ctrl+C restores the
- * workspace to how it was. No prompts: the `Decisor` is injected.
+ * Sanitize core (SAN-001/003/006/012/014, SCAN-008): applies decisions (prompts, file or
+ * auto-fixtures) and the adapter `Change`s inside `work/`, writes `.env.example`, re-scans with
+ * the injected function, signs `approval.json` when nothing is open, and regenerates
+ * `report.html`. Transactional: any error or Ctrl+C restores the workspace to how it was.
+ * No prompts: the `Decisor` is injected. Without a TTY (SAN-004) only the file and the confirmed
+ * auto-fixtures list decide; whatever stays open ends in `PUERTA_BLOQUEADA` (decisions kept).
  */
 export async function sanitize(o: SanitizeOptions): Promise<SanitizeResult> {
-	if (!o.tty) {
-		throw new MctError(
-			"PUERTA_BLOQUEADA",
-			"Sin terminal interactiva no se puede aprobar",
-			{
-				accion: "Corre mct sanitize desde una terminal",
-				etapa: "sanitize",
-				detalle: { motivo: "sin-tty" },
-			},
-		);
-	}
+	validarEntrada(o);
 	if (o.signal?.aborted) throw interrumpido();
 	const logger = (() => {
 		try {
@@ -735,13 +780,26 @@ export async function sanitize(o: SanitizeOptions): Promise<SanitizeResult> {
 	}
 	const cuenta = (e: string) =>
 		salida.hallazgos.filter((h) => h.estado === e).length;
+	const decididos = salida.hallazgos.filter((h) => DECIDIDOS.has(h.estado));
+	const porVia = (v: string) =>
+		decididos.filter((h) => (h.via ?? "tty") === v).length;
+	const abiertosLista =
+		salida.abiertos > 0
+			? await hallazgosAbiertos(o.raiz, salida.hallazgos)
+			: [];
 	const result: SanitizeResult = {
 		decididos: {
 			resuelto: cuenta("resuelto"),
 			falsoPositivo: cuenta("falso-positivo"),
 			aceptado: cuenta("aceptado"),
 		},
+		porVia: {
+			tty: porVia("tty"),
+			archivo: porVia("archivo"),
+			autoFixtures: porVia("auto-fixtures"),
+		},
 		abiertos: salida.abiertos,
+		hallazgosAbiertos: abiertosLista,
 		aprobacion:
 			salida.arbolSha256 === null ? null : { arbolSha256: salida.arbolSha256 },
 	};
@@ -750,9 +808,15 @@ export async function sanitize(o: SanitizeOptions): Promise<SanitizeResult> {
 			"PUERTA_BLOQUEADA",
 			"Quedan hallazgos sin resolver",
 			{
-				accion: "Corre: mct sanitize",
+				accion: o.tty
+					? "Corre: mct sanitize"
+					: "Corre mct sanitize desde una terminal",
 				etapa: "sanitize",
-				detalle: { abiertos: salida.abiertos },
+				detalle: {
+					abiertos: salida.abiertos,
+					hallazgosAbiertos: abiertosLista,
+					...(!o.tty && { motivo: "sin-tty" }),
+				},
 			},
 		);
 		await logger?.error(err).catch(() => undefined);
@@ -761,7 +825,70 @@ export async function sanitize(o: SanitizeOptions): Promise<SanitizeResult> {
 	return result;
 }
 
-async function transaccion(o: SanitizeOptions): Promise<Salida> {
+/**
+ * SAN-014 dry-run: the candidate list and its sha256 for the current tree, applying nothing
+ * (the same transaction runs and is rolled back, so the list is the one `--confirmo` checks).
+ */
+export async function autoFixturesLista(
+	o: SanitizeOptions,
+): Promise<ListaAuto> {
+	validarEntrada(o);
+	if (o.signal?.aborted) throw interrumpido();
+	try {
+		await withLock(o.raiz, () =>
+			transaccion({
+				...o,
+				autoFixtures: { ...o.autoFixtures },
+				listaSolo: true,
+			}),
+		);
+	} catch (err) {
+		if (err instanceof ListaListo) return err.lista;
+		throw err;
+	}
+	throw new MctError("INTERNO", "La lista de auto-fixtures no se calculó");
+}
+
+/** SAN-013: `hallazgosAbiertos` for `--json` (open findings only, never `aislado`). */
+export async function hallazgosAbiertos(
+	raiz: string,
+	hallazgos?: readonly Finding[],
+): Promise<HallazgoAbierto[]> {
+	const lista = hallazgos ?? (await readFindings(raiz));
+	const abiertos = lista.filter((h) => h.estado === "abierto");
+	const clave = await leerClave(raiz);
+	const ws = workspacePaths(raiz);
+	const out: HallazgoAbierto[] = [];
+	for (const h of abiertos) {
+		const base: HallazgoAbierto = {
+			id: h.id,
+			regla: h.regla,
+			tipo: h.tipo,
+			severidad: h.severidad,
+			archivo: h.archivo,
+			linea: h.linea,
+		};
+		if (h.tipo === "secreto" && h.regla !== "dict-match") {
+			// Up to 4 real characters, none when the value is 16 or shorter; unknown length: none.
+			let fragmento = "****";
+			if (h.zona === "work" && h.linea >= 1) {
+				const abs = await inside(ws.work, h.archivo);
+				const t = abs === null ? null : await leerExacto(abs);
+				const span = t === null ? null : ubicar(t.text, h, clave);
+				if (span !== null && Array.from(span.valor).length > 16) {
+					fragmento = maskValue(span.valor);
+				}
+			}
+			base.fragmento = fragmento;
+		}
+		out.push(base);
+	}
+	return out;
+}
+
+type OpcionesInternas = SanitizeOptions & { listaSolo?: boolean };
+
+async function transaccion(o: OpcionesInternas): Promise<Salida> {
 	const journal = await Journal.crear(o.raiz);
 	try {
 		return await ejecutar(o, journal);
@@ -781,8 +908,40 @@ async function transaccion(o: SanitizeOptions): Promise<Salida> {
 	}
 }
 
-async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
+interface Aplicado {
+	decisionesSha256: string[];
+	autoFixturesSha256: string[];
+}
+
+/** Hashes applied since the last signed approval (survives a blocked run and a re-scan). */
+async function leerAplicado(raiz: string): Promise<Aplicado> {
+	const vacio: Aplicado = { decisionesSha256: [], autoFixturesSha256: [] };
+	try {
+		const doc: unknown = JSON.parse(
+			await readFile(join(raiz, APLICADO_FILE), "utf8"),
+		);
+		if (!isObj(doc)) return vacio;
+		const lista = (v: unknown): string[] =>
+			Array.isArray(v)
+				? v.filter((x): x is string => typeof x === "string" && SHA256.test(x))
+				: [];
+		return {
+			decisionesSha256: lista(doc.decisionesSha256),
+			autoFixturesSha256: lista(doc.autoFixturesSha256),
+		};
+	} catch {
+		return vacio;
+	}
+}
+
+const unicos = (xs: readonly string[]): string[] => [...new Set(xs)];
+
+async function ejecutar(
+	o: OpcionesInternas,
+	journal: Journal,
+): Promise<Salida> {
 	const ws = workspacePaths(o.raiz);
+	const clave = await leerClave(o.raiz);
 	const signal = o.signal;
 	const ahora = o.now ?? (() => new Date().toISOString());
 	const usuario = (o.usuario ?? (() => userInfo().username))();
@@ -836,10 +995,25 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 	}
 	check();
 
+	// SAN-012/SAN-015: the whole file is read and validated before anything is touched.
+	const archivo =
+		o.decisiones === undefined
+			? undefined
+			: await leerArchivoDecisiones(o.decisiones, {
+					raiz: o.raiz,
+					origen: state.origen,
+				});
+	const aplicadoFile = join(o.raiz, APLICADO_FILE);
+	const aplicado = await leerAplicado(o.raiz);
+	const aprobacionPrevia: Approval | null = await readApproval(o.raiz).catch(
+		() => null,
+	);
+
 	await journal.proteger(stateFile);
 	await journal.proteger(findingsFile);
 	await journal.proteger(approvalFile);
 	await journal.proteger(reportFile);
+	await journal.proteger(aplicadoFile);
 
 	if (o.reopen !== undefined) {
 		const ts = ahora();
@@ -995,9 +1169,189 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 		return textos.get(abs) ?? null;
 	};
 
+	const sugerir = (h: Finding, i: Info): string => {
+		if (i.eliminar) return "";
+		const previo = i.span ? nombres.get(i.span.clave) : undefined;
+		if (previo !== undefined) return previo;
+		const base = nombreDeRegla(h.regla);
+		let nombre = base;
+		for (let k = 2; usados.has(nombre); k++) nombre = `${base}_${k}`;
+		return nombre;
+	};
+	const fijar = (nombre: string, i: Info): void => {
+		usados.add(nombre);
+		if (i.span) nombres.set(i.span.clave, nombre);
+	};
+
+	/** In-memory value of a finding (work or quarantine); null if it cannot be located. */
+	const valorDe = async (h: Finding): Promise<string | null> => {
+		if (h.linea < 1 || h.tipo === "estructura" || h.tipo === "binario") {
+			return null;
+		}
+		const abs = await inside(
+			h.zona === "work" ? ws.work : ws.quarantine,
+			h.archivo,
+		);
+		if (abs === null) return null;
+		const t = await leer(abs);
+		if (t === null) return null;
+		return ubicar(t.text, h, clave)?.valor ?? null;
+	};
+
+	/** SAN-002 reference values: every current finding's value plus the dictionary terms. */
+	const referencias = async (): Promise<string[]> => {
+		const out: string[] = [...(o.terminos ?? [])];
+		for (const h of actuales) {
+			if (h.estado === "obsoleto") continue;
+			const v = await valorDe(h);
+			if (v !== null) out.push(v);
+		}
+		return out;
+	};
+
+	const vias = new Map<string, "archivo" | "auto-fixtures">();
+	const nuevoAuto: string[] = [];
+	const nuevoArchivo: string[] = [];
+
+	// ---- SAN-014: auto-fixtures (before the file and the prompts)
+	if (o.autoFixtures !== undefined) {
+		const decididaAuto = (h: Finding): boolean =>
+			h.estado === "falso-positivo" &&
+			h.via === "auto-fixtures" &&
+			h.motivo === MOTIVO_AUTO;
+		const candidatos: Finding[] = [];
+		for (const h of actuales) {
+			if (h.estado !== "abierto" && !decididaAuto(h)) continue;
+			const v = await valorDe(h);
+			if (esCandidato({ ...h, estado: "abierto" }, v)) candidatos.push(h);
+		}
+		const lista: ListaAuto = {
+			candidatos: candidatos.map((h) => ({
+				id: h.id,
+				regla: h.regla,
+				tipo: h.tipo,
+				archivo: h.archivo,
+				linea: h.linea,
+			})),
+			sha256: huellaLista(candidatos.map((h) => h.id)),
+		};
+		if (o.listaSolo === true) throw new ListaListo(lista);
+		let confirmado = false;
+		if (o.autoFixtures.confirmo !== undefined) {
+			if (o.autoFixtures.confirmo !== lista.sha256) {
+				throw validacion(
+					"La lista de auto-fixtures cambió desde que la viste; no se aplicó nada",
+					{ motivo: "sha256" },
+					"Corre de nuevo: mct sanitize --auto-fixtures --dry-run --json",
+				);
+			}
+			confirmado = true;
+		} else if (o.tty && o.autoFixtures.confirmar !== undefined) {
+			confirmado = (await cancelable(o.autoFixtures.confirmar(lista))) === true;
+			check();
+		} else {
+			throw validacion(
+				"--auto-fixtures necesita --confirmo <sha256> sin terminal; no se aplicó nada",
+				{ motivo: "sin-confirmo" },
+				"Corre primero: mct sanitize --auto-fixtures --dry-run --json",
+			);
+		}
+		if (confirmado && candidatos.length > 0) {
+			const ids = new Set(
+				candidatos.filter((h) => h.estado === "abierto").map((h) => h.id),
+			);
+			const ts = ahora();
+			actuales = actuales.map((h) => {
+				if (!ids.has(h.id)) return h;
+				eventos.push({
+					id: h.id,
+					regla: h.regla,
+					evento: "sanitize.falso-positivo.auto-fixtures",
+				});
+				vias.set(h.id, "auto-fixtures");
+				return {
+					...h,
+					estado: "falso-positivo" as const,
+					motivo: MOTIVO_AUTO,
+					via: "auto-fixtures" as const,
+					decidio: usuario,
+					decididoEn: ts,
+				};
+			});
+			nuevoAuto.push(lista.sha256);
+		}
+	}
+
+	// ---- SAN-012: decisions file, planned whole (nothing applied until all are valid)
+	const planArchivo = new Map<string, EntradaDecision>();
+	if (archivo !== undefined) {
+		const porId = new Map(actuales.map((h) => [h.id, h]));
+		const vistos = new Map<string, EntradaDecision["accion"]>();
+		let refs: string[] | undefined;
+		for (const [n, e] of archivo.entradas.entries()) {
+			const mal = (motivo: string, cause?: unknown): MctError =>
+				new MctError(
+					"VALIDACION",
+					`La entrada ${n + 1} del archivo de decisiones no se puede aplicar; no se aplicó ninguna`,
+					{
+						etapa: "sanitize",
+						...(cause !== undefined && { cause }),
+						detalle: { motivo, entrada: n + 1 },
+						accion:
+							motivo === "solo-terminal"
+								? "Quita la entrada y corre mct sanitize en una terminal (por archivo solo se puede reemplazar)"
+								: "Corrige el archivo y repite",
+					},
+				);
+			const h = porId.get(e.id);
+			if (h === undefined) throw mal("id-desconocido");
+			const previa = vistos.get(e.id);
+			if (previa !== undefined) {
+				if (previa !== e.accion) throw mal("conflicto");
+				continue;
+			}
+			vistos.set(e.id, e.accion);
+			if (h.estado === "aislado") throw mal("aislado");
+			const decidida = accionDecidida(h);
+			if (decidida !== null) {
+				if (decidida === e.accion) continue;
+				throw mal("conflicto");
+			}
+			if (h.estado !== "abierto") throw mal("estado");
+			if (e.accion === "falso-positivo") {
+				// By file, binaries and n8n pinData/staticData (any high-severity
+				// structure) can only be replaced (deleted): false positive is terminal-only.
+				if (
+					h.tipo === "secreto" ||
+					h.tipo === "binario" ||
+					h.severidad === "critico" ||
+					(h.tipo === "estructura" &&
+						(h.severidad === "alto" ||
+							h.regla === "n8n-pindata" ||
+							h.regla === "n8n-staticdata"))
+				) {
+					throw mal("solo-terminal");
+				}
+				refs ??= await referencias();
+				try {
+					validarMotivo(e.motivo, refs);
+				} catch (cause) {
+					throw mal("motivo", cause);
+				}
+			} else {
+				const i = await informacion(h);
+				if (!i.puedeReemplazar) throw mal("no-reemplazable");
+			}
+			planArchivo.set(e.id, e);
+		}
+		textos.clear();
+	}
+
 	for (let ronda = 0; ; ronda++) {
 		const abiertos = actuales.filter((h) => h.estado === "abierto");
 		if (abiertos.length === 0 || ronda >= MAX_RONDAS) break;
+		// SAN-004: without a TTY only the file decides; nothing is asked.
+		if (!o.tty && (ronda > 0 || planArchivo.size === 0)) break;
 		textos.clear();
 
 		const info = new Map<string, Info>();
@@ -1005,26 +1359,36 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 			info.set(h.id, await informacion(h));
 		}
 
-		const sugerir = (h: Finding, i: Info): string => {
-			if (i.eliminar) return "";
-			const previo = i.span ? nombres.get(i.span.clave) : undefined;
-			if (previo !== undefined) return previo;
-			const base = nombreDeRegla(h.regla);
-			let nombre = base;
-			for (let k = 2; usados.has(nombre); k++) nombre = `${base}_${k}`;
-			return nombre;
-		};
-		const fijar = (nombre: string, i: Info): void => {
-			usados.add(nombre);
-			if (i.span) nombres.set(i.span.clave, nombre);
-		};
-
 		const decisiones = new Map<string, Decision>();
 		const asignados = new Map<string, string>();
+		if (ronda === 0) {
+			const refsArchivo = await referencias();
+			for (const [id, e] of planArchivo) {
+				const h = abiertos.find((x) => x.id === id);
+				if (h === undefined) continue;
+				const i = info.get(id) as Info;
+				if (e.accion === "falso-positivo") {
+					decisiones.set(id, {
+						accion: "falso-positivo",
+						motivo: validarMotivo(e.motivo, refsArchivo),
+					});
+				} else if (i.eliminar) {
+					decisiones.set(id, { accion: "reemplazar" });
+				} else {
+					const nombre = e.nombre ?? sugerir(h, i);
+					fijar(nombre, i);
+					asignados.set(id, nombre);
+					decisiones.set(id, { accion: "reemplazar", nombre });
+				}
+				vias.set(id, "archivo");
+			}
+		}
 		if (o.autoPlaceholders === true) {
 			const candidatos = abiertos.filter((h) => {
 				const i = info.get(h.id);
-				return i?.puedeReemplazar === true && !i.eliminar;
+				return (
+					i?.puedeReemplazar === true && !i.eliminar && !decisiones.has(h.id)
+				);
 			});
 			if (candidatos.length > 0) {
 				const resumen: ResumenAuto = { reemplazos: [] };
@@ -1056,8 +1420,10 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 			}
 		}
 
+		const refsPrompt = o.tty ? await referencias() : [];
 		for (const h of abiertos) {
 			if (decisiones.has(h.id)) continue;
+			if (!o.tty) continue;
 			const i = info.get(h.id) as Info;
 			const d = await cancelable(
 				o.decisor.decidir(h, {
@@ -1097,7 +1463,7 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 			} else if (d.accion === "falso-positivo" || d.accion === "aceptar") {
 				decisiones.set(h.id, {
 					accion: d.accion,
-					motivo: validarMotivo(d.motivo, i.span?.valor),
+					motivo: validarMotivo(d.motivo, refsPrompt),
 				} as Decision);
 			} else {
 				throw validacion("Acción desconocida");
@@ -1173,16 +1539,21 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 		actuales = actuales.map((h) => {
 			const d = decisiones.get(h.id);
 			if (d === undefined) return h;
+			const via = vias.get(h.id) ?? "tty";
 			eventos.push({
 				id: h.id,
 				regla: h.regla,
-				evento: `sanitize.${d.accion}`,
+				evento:
+					via === "tty"
+						? `sanitize.${d.accion}`
+						: `sanitize.${d.accion}.${via}`,
 			});
 			if (d.accion === "reemplazar") {
 				resueltosCorrida.add(h.id);
 				return {
 					...h,
 					estado: "resuelto" as const,
+					via,
 					decidio: usuario,
 					decididoEn: ts,
 				};
@@ -1192,6 +1563,7 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 					...h,
 					estado: "falso-positivo" as const,
 					motivo: d.motivo,
+					via,
 					decidio: usuario,
 					decididoEn: ts,
 				};
@@ -1201,6 +1573,7 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 					...h,
 					estado: "aceptado" as const,
 					motivo: d.motivo,
+					via,
 					decidio: usuario,
 					decididoEn: ts,
 				};
@@ -1217,9 +1590,27 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 	const arbol = await hashTree(ws.work);
 	state = applyCascade(await readState(o.raiz), { workSha256: arbol }, ts);
 	let arbolSha256: string | null = null;
+	if (archivo !== undefined) nuevoArchivo.push(archivo.sha256);
+	const pendiente: Aplicado = {
+		decisionesSha256: unicos([...aplicado.decisionesSha256, ...nuevoArchivo]),
+		autoFixturesSha256: unicos([...aplicado.autoFixturesSha256, ...nuevoAuto]),
+	};
 	if (abiertos === 0) {
 		check();
+		// Same tree re-signed (idempotent run): keep what the previous approval recorded.
+		const previa =
+			aprobacionPrevia !== null && aprobacionPrevia.arbolSha256 === arbol
+				? aprobacionPrevia
+				: null;
 		const firma = await signApproval({
+			decisionesSha256: unicos([
+				...(previa?.decisionesSha256 ?? []),
+				...pendiente.decisionesSha256,
+			]),
+			autoFixturesSha256: unicos([
+				...(previa?.autoFixturesSha256 ?? []),
+				...pendiente.autoFixturesSha256,
+			]),
 			raiz: o.raiz,
 			hallazgos: actuales,
 			gitleaksVersion,
@@ -1228,8 +1619,18 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 			user: () => usuario,
 		});
 		arbolSha256 = firma.arbolSha256;
+		await journal.escribir(
+			aplicadoFile,
+			`${JSON.stringify({ decisionesSha256: [], autoFixturesSha256: [] }, null, 2)}\n`,
+			0o600,
+		);
 	} else {
 		await invalidateApproval(o.raiz);
+		await journal.escribir(
+			aplicadoFile,
+			`${JSON.stringify(pendiente, null, 2)}\n`,
+			0o600,
+		);
 	}
 	state = {
 		...state,
@@ -1273,7 +1674,7 @@ async function ejecutar(o: SanitizeOptions, journal: Journal): Promise<Salida> {
 		if (h.tipo === "estructura" || h.linea < 1) return { ...no, abs };
 		const t = await leer(abs);
 		if (t === null) return { ...no, abs };
-		const span = ubicar(t.text, h);
+		const span = ubicar(t.text, h, clave);
 		if (span === null) return { ...no, abs };
 		return { puedeReemplazar: true, eliminar: false, abs, span };
 	}
