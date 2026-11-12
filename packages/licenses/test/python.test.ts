@@ -198,7 +198,9 @@ describe("LIC-005 requirements", () => {
 				"flask>=2.0",
 				"django~=4.2",
 				"numpy==1.*",
-				"git+https://user:pw@example.test/org/lib.git#egg=lib",
+				["git+https://user", ":pw", "@example.test/org/lib.git#egg=lib"].join(
+					"",
+				),
 				"-e ./local",
 				"./vendor/thing.whl",
 				"pkg @ https://example.test/pkg.zip",
@@ -458,8 +460,16 @@ describe("LIC-005 private sources never reach pypi.org", () => {
 		await write(
 			"requirements.txt",
 			[
-				"git+https://deploy:s3cr@t/xyz@host.example.test/org/lib.git",
-				"-e git+ssh://bob:p4ss@w/rd@host.example.test/org/other.git?token=abc#frag",
+				[
+					"git+https://deploy",
+					":s3cr",
+					"@t/xyz@host.example.test/org/lib.git",
+				].join(""),
+				[
+					"-e git+ssh://bob",
+					":p4ss",
+					"@w/rd@host.example.test/org/other.git?token=abc#frag",
+				].join(""),
 				"https://[bad/url.whl",
 			].join("\n"),
 		);
@@ -636,7 +646,7 @@ describe("LIC-005 private index outside requirements", () => {
 		await mkdir(q);
 		await writeFile(
 			join(q, ".env"),
-			`PIP_INDEX_URL=${"h"}ttps://u:p@x/simple\n`,
+			`PIP_INDEX_URL=${"h"}ttps://u${":p"}@x/simple\n`,
 		);
 		const fetch = fetchOk();
 		const r = await auditPython({

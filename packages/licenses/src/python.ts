@@ -540,13 +540,24 @@ export interface PythonManifests {
 	otherManifest: boolean;
 }
 
+/**
+ * True when a manifest exists as a regular file; false when it does not exist.
+ * A manifest that is a symlink or not a regular file fails closed (LIC-005).
+ */
 async function isFile(path: string): Promise<boolean> {
+	let st: Awaited<ReturnType<typeof lstat>>;
 	try {
-		const st = await lstat(path);
-		return st.isFile() && !st.isSymbolicLink();
-	} catch {
-		return false;
+		st = await lstat(path);
+	} catch (cause) {
+		if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw fileError("No se pudo inspeccionar un archivo de dependencias");
 	}
+	if (st.isSymbolicLink() || !st.isFile()) {
+		throw fileError(
+			"Un archivo de dependencias debe ser regular y sin enlaces",
+		);
+	}
+	return true;
 }
 
 /** Python manifests at the root of `workDir` (LIC-005). */
