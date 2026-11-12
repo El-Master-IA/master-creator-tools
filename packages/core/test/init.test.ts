@@ -325,6 +325,7 @@ describe("CLI-006 y SEC-001 avisos de T41", () => {
 			const dic = join(home, ".mct", "sensible.txt");
 			await writeFile(dic, "x\n");
 			await chmod(dic, 0o644);
+			await put(dest, "mct.config.json", "{}\n");
 			const r = await initFromSource(opts());
 			expect(r.avisos).toHaveLength(1);
 			expect(r.avisos[0]?.accion).toContain("chmod 600");
