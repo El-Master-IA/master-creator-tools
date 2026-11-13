@@ -6,6 +6,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -636,6 +637,22 @@ describe("PLG-005 etapas", () => {
 		const r = liberar(["destino", "--origen", origen()]);
 		expect(r.json.dest).toBe(destDe());
 		expect(existsSync(destDe())).toBe(true);
+	});
+
+	it("PLG-005 corre igual cuando el plugin se instala por un enlace (junction o symlink)", () => {
+		const enlace = join(tmp, "plugins", "liberar");
+		mkdirSync(dirname(enlace), { recursive: true });
+		symlinkSync(PLUGIN, enlace, "junction");
+		const r = spawnSync(
+			process.execPath,
+			[join(enlace, "scripts", "liberar.mjs"), "destino", "--origen", origen()],
+			{
+				encoding: "utf8",
+				env: { ...process.env, HOME: tmp, USERPROFILE: tmp },
+			},
+		);
+		expect(r.status).toBe(0);
+		expect((JSON.parse(r.stdout) as Json).dest).toBe(destDe());
 	});
 
 	it("PLG-005 corre las etapas en orden con --json y el destino fijo, sin --force", () => {

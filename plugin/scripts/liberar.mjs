@@ -1111,9 +1111,27 @@ export function main(argv) {
 	}
 }
 
-if (
-	process.argv[1] &&
-	resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+/**
+ * True when this file is the entry script. Both paths are resolved through
+ * symlinks and junctions (a plugin is often installed through one), and compared
+ * case-insensitively on Windows.
+ */
+export function esPuntoDeEntrada(argv1, url = import.meta.url) {
+	if (!argv1) return false;
+	const real = (p) => {
+		try {
+			return realpathSync.native(resolve(p));
+		} catch {
+			return resolve(p);
+		}
+	};
+	const a = real(argv1);
+	const b = real(fileURLToPath(url));
+	return process.platform === "win32"
+		? a.toLowerCase() === b.toLowerCase()
+		: a === b;
+}
+
+if (esPuntoDeEntrada(process.argv[1])) {
 	process.exitCode = main(process.argv.slice(2));
 }
