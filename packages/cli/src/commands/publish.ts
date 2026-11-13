@@ -122,6 +122,12 @@ const TEXT = {
 		privado: "deja el repo privado (no pide hacerlo público)",
 		dryRun: "hace todas las comprobaciones sin escribir en GitHub",
 		resume: "retoma un publish que este workspace dejó a medias",
+		confirmoRepo:
+			"confirma sin terminal repitiendo el owner/nombre exacto (lo pasa quien ya tiene el sí de la persona)",
+		publicoFlag: "con --confirmo-repo: lo hace público tras el escaneo remoto",
+		publicoSinConfirmo:
+			"--publico solo va con --confirmo-repo; sin terminal no hay a quién preguntar",
+		publicoYPrivado: "--publico y --private no van juntos",
 		sinRepo: "Falta --repo <owner/nombre>",
 		accionRepo: "Corre: mct publish --repo <owner/nombre>",
 		sinTty:
@@ -163,6 +169,12 @@ const TEXT = {
 		privado: "keep the repo private (does not ask to make it public)",
 		dryRun: "run every check without writing to GitHub",
 		resume: "resume a publish this workspace left half done",
+		confirmoRepo:
+			"confirm without a terminal by repeating the exact owner/name (passed by whoever already has the person's yes)",
+		publicoFlag: "with --confirmo-repo: make it public after the remote scan",
+		publicoSinConfirmo:
+			"--publico only goes with --confirmo-repo; without a terminal there is nobody to ask",
+		publicoYPrivado: "--publico and --private do not go together",
 		sinRepo: "Missing --repo <owner/name>",
 		accionRepo: "Run: mct publish --repo <owner/name>",
 		sinTty:
@@ -219,12 +231,15 @@ interface PublishFlags {
 	private?: boolean;
 	dryRun?: boolean;
 	resume?: boolean;
+	confirmoRepo?: string;
+	publico?: boolean;
 }
 
 /**
- * PUB-002, CLI-008. There is no `--yes`: a real publish always needs a TTY, the exact
- * `owner/name` typed by the person, a second confirmation before going public, and ends
- * asking whether to delete the workspace (No by default). `--dry-run` needs no TTY.
+ * PUB-002, PUB-014, CLI-008. There is no `--yes`: a real publish needs the exact `owner/name`
+ * typed in a TTY or repeated with `--confirmo-repo` (by a caller that already has the person's
+ * yes), going public needs the second confirmation or `--publico`, and only a TTY is asked
+ * whether to delete the workspace (No by default). `--dry-run` needs no TTY.
  */
 export function register(program: Command): void {
 	program
@@ -234,6 +249,8 @@ export function register(program: Command): void {
 		.option("--private", TEXT.es.privado)
 		.option("--dry-run", TEXT.es.dryRun)
 		.option("--resume", TEXT.es.resume)
+		.option("--confirmo-repo <owner/nombre>", TEXT.es.confirmoRepo)
+		.option("--publico", TEXT.es.publicoFlag)
 		.action(async (flags: PublishFlags) => {
 			const ctx = contextOf(program);
 			const t = TEXT[ctx.lang];
@@ -246,8 +263,21 @@ export function register(program: Command): void {
 			}
 			const dryRun = flags.dryRun === true;
 			const privado = flags.private === true;
+			const confirmado = flags.confirmoRepo !== undefined;
+			if (flags.publico === true && privado) {
+				throw new MctError("VALIDACION", t.publicoYPrivado, {
+					etapa: "publish",
+				});
+			}
+			if (flags.publico === true && !confirmado && !ctx.interactive) {
+				throw cancelado(t, t.publicoSinConfirmo);
+			}
+			// PUB-014: an exact repeat of owner/name stands for the typed name (no --yes).
+			if (confirmado && flags.confirmoRepo !== repo) {
+				throw cancelado(t, t.noCoincide(repo));
+			}
 			// No TTY (or --json) means nobody can type the name: nothing is called.
-			if (!dryRun && !ctx.interactive) {
+			if (!dryRun && !confirmado && !ctx.interactive) {
 				throw new MctError("CANCELADO", t.sinTty, {
 					etapa: "publish",
 					accion: t.accionTty,
@@ -280,6 +310,20 @@ export function register(program: Command): void {
 			ctx.info(resumenLineas(t, await deps.resumen(raiz)).join("\n"));
 
 			stopIfAborted(ctx, t);
+			if (confirmado) {
+				const result = await deps.publish({
+					...base,
+					confirmarPublico: async () => flags.publico === true,
+				});
+				ctx.info(t.hecho(result));
+				// Without a terminal the workspace is always kept (CLI-008 asks only in a TTY).
+				ctx.info(t.conservado(ctx.workspace));
+				ctx.result(
+					{ url: result.url, visibilidad: result.visibilidad, tag: result.tag },
+					undefined,
+				);
+				return;
+			}
 			const typed = await deps.prompter.text({ message: t.confirmar(repo) });
 			if (typed === null) throw cancelado(t);
 			if (typed !== repo) throw cancelado(t, t.noCoincide(repo));

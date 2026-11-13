@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// liberar.mjs: parte determinista del plugin /liberar (spec plugin.md, PLG-001..PLG-005).
+// liberar.mjs: parte determinista del plugin /liberar (spec plugin.md, PLG-001..PLG-010).
 // Sin dependencias. Cada subcomando escribe un JSON en stdout.
 // Códigos de salida: 0 = el flujo puede seguir, 2 = uso o validación inválidos,
 // 3 = el flujo se detiene (el JSON trae el motivo y la acción).
@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -14,7 +15,14 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
@@ -138,7 +146,7 @@ function pluginVersion() {
 			readFileSync(join(AQUI, "..", ".claude-plugin", "plugin.json"), "utf8"),
 		).version;
 	} catch {
-		return "0.2.0";
+		return "0.3.0";
 	}
 }
 
@@ -1017,6 +1025,116 @@ function cmdOverrideLicencias({ op }) {
 	return { archivo: ruta, cambio, escrito: true };
 }
 
+// ---------- PLG-009 readme ----------
+
+/** Real path of `p`, resolving links in its nearest existing ancestor. */
+function realCercano(p) {
+	let actual = resolve(p);
+	const resto = [];
+	for (;;) {
+		try {
+			return join(realpathSync.native(actual), ...resto);
+		} catch {
+			const padre = dirname(actual);
+			if (padre === actual) return resolve(p);
+			resto.unshift(basename(actual));
+			actual = padre;
+		}
+	}
+}
+
+/** True when `dest` is `origen` or inside it, after resolving links (junctions too). */
+function dentroDe(dest, origen) {
+	const plegar = (x) =>
+		process.platform === "win32" || process.platform === "darwin"
+			? x.toLowerCase()
+			: x;
+	const rel = relative(plegar(realCercano(origen)), plegar(realCercano(dest)));
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function cmdReadme({ op }) {
+	const dest = requerirDest(op);
+	if (typeof op.origen !== "string") throw invalido("falta --origen");
+	if (dentroDe(dest, resolve(op.origen)))
+		throw invalido(
+			"el README va al mct.config.json del destino, nunca al del origen",
+		);
+	const plantilla = op.plantilla ?? "el-master-ia";
+	let readme;
+	if (plantilla === "estandar") readme = { plantilla: "estandar" };
+	else if (plantilla === "el-master-ia") {
+		const contenido = jsonONulo(leerEntrada(op, "archivo"));
+		if (!contenido || typeof contenido !== "object" || Array.isArray(contenido))
+			throw invalido("el contenido del README debe ser un objeto JSON");
+		readme = { plantilla: "el-master-ia", contenido };
+	} else throw invalido("--plantilla estandar|el-master-ia");
+	const ruta = join(dest, "mct.config.json");
+	let actual = {};
+	if (existsSync(ruta)) {
+		const st = lstatSync(ruta);
+		if (st.isSymbolicLink() || !st.isFile())
+			throw detener({
+				razon: "config-enlace",
+				texto: `${ruta} debe ser un archivo regular, no un enlace. No escribo nada.`,
+			});
+		actual = jsonONulo(readFileSync(ruta, "utf8"));
+	}
+	if (!actual || typeof actual !== "object" || Array.isArray(actual))
+		throw detener({ razon: "config-ilegible", texto: `No pude leer ${ruta}.` });
+	const nuevo = { ...structuredClone(actual), readme };
+	if (!op.escribir)
+		return { archivo: ruta, existe: existsSync(ruta), readme, escrito: false };
+	if (!op.si) throw invalido("escribir exige --si explícito de Alexander");
+	mkdirSync(dest, { recursive: true });
+	writeFileSync(ruta, `${JSON.stringify(nuevo, null, 2)}\n`);
+	return { archivo: ruta, escrito: true };
+}
+
+// ---------- PLG-010 publicar ----------
+
+const REPO_GH =
+	/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+
+/**
+ * PLG-010: publishes with the yes Alexander gave in the chat for this exact repo.
+ * mct still runs every gate, creates the repo private, scans the remote clone and only
+ * then makes it public (PUB-014). Never without --si.
+ */
+function cmdPublicar({ op }) {
+	const dest = requerirDest(op);
+	const origen = typeof op.origen === "string" ? resolve(op.origen) : undefined;
+	const repo = op.repo;
+	if (typeof repo !== "string" || !REPO_GH.test(repo) || repo.includes(".."))
+		throw invalido("--repo owner/nombre");
+	if (!op.si) throw invalido("publicar exige --si explícito de Alexander");
+	exigirVersionMct(origen);
+	const r = correrMct(
+		[
+			"publish",
+			"--workspace",
+			wsDe(dest),
+			"--repo",
+			repo,
+			"--confirmo-repo",
+			repo,
+			...(op.privado ? [] : ["--publico"]),
+			"--json",
+		],
+		origen,
+	);
+	if (r.code !== 0 || !r.salida || typeof r.salida.url !== "string")
+		throw detener({
+			razon: "publicar",
+			mensaje: mensajeError(r.salida, r.code),
+		});
+	return {
+		url: r.salida.url,
+		visibilidad: r.salida.visibilidad,
+		tag: r.salida.tag,
+	};
+}
+
 // ---------- PLG-004 resumen ----------
 
 function cmdResumen({ op }) {
@@ -1089,6 +1207,8 @@ const COMANDOS = {
 	revision: cmdRevision,
 	"escribir-decisiones": cmdEscribirDecisiones,
 	"override-licencias": cmdOverrideLicencias,
+	readme: cmdReadme,
+	publicar: cmdPublicar,
 	etapas: cmdEtapas,
 	resumen: cmdResumen,
 };

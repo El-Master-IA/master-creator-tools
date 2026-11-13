@@ -5,6 +5,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and sem
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-13
+
+### Added / Agregado
+
+- Plantilla de README `el-master-ia` activable con `readme.plantilla` en `mct.config.json`: README.md en español y README.en.md con la estructura de los repos de El Máster IA (promesa, por qué existe, qué obtienes, prompt para empezar, qué necesitas, cómo funciona, preguntas frecuentes, si algo sale mal, buenas prácticas, qué trae, créditos, licencia y firma). El contenido va en `readme.contenido` y se valida y escanea como el resto / `el-master-ia` README template enabled with `readme.plantilla` in `mct.config.json`: Spanish README.md plus README.en.md with the El Máster IA structure; content lives in `readme.contenido` and is validated and scanned like everything else (CFG-003, PKG-008, PKG-009).
+- `mct publish --confirmo-repo <owner/nombre> [--publico]`: confirma sin terminal repitiendo el nombre exacto del repo (sigue sin `--yes`) / confirm without a terminal by repeating the exact repo name (still no `--yes`) (PUB-014).
+- `/liberar` en un solo paso: muestra el plan completo en un mensaje y con un sí limpia, arma el README, verifica, publica el repo y, si existe la skill de El Laboratorio, la portada y su página; solo se detiene ante hallazgos reales / one-step `/liberar`: one plan, one yes, stops only on real findings (PLG-009, PLG-010).
+
+### Fixed / Corregido
+
+- `/liberar` corre cuando el plugin se instala por un enlace (junction o symlink) / `/liberar` runs when the plugin is installed through a link.
+- Un manifiesto Python que es un enlace simbólico falla cerrado / a symlinked Python manifest fails closed (LIC-005).
+
 ## [0.2.0] - 2026-11-12
 
 ### Added / Agregado

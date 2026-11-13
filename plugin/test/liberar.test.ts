@@ -592,35 +592,112 @@ describe("PLG-004 resumen", () => {
 		expect(r.json).toMatchObject({ listo: false, faltan: ["verify"] });
 	});
 
-	it("PLG-004 ninguna llamada spawn, exec o execFile del plugin ni bloque Bash del markdown contiene publish", () => {
+	it("PLG-010 mct publish solo se invoca desde cmdPublicar, con --confirmo-repo y tras --si", () => {
 		const codigo = readFileSync(SCRIPT, "utf8");
-		const proceso = [
-			...codigo.matchAll(
-				/\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(/g,
-			),
-		];
-		expect(proceso.length).toBeGreaterThan(0);
-		for (const m of proceso) {
-			const desde = m.index ?? 0;
-			const ventana = codigo.slice(desde, desde + 400);
-			expect(ventana.slice(0, ventana.indexOf(";"))).not.toMatch(/publish/);
-		}
-		expect(codigo).not.toMatch(/\.stdin\b|input:/);
-		const md = readFileSync(join(PLUGIN, "commands", "liberar.md"), "utf8");
-		const bloques = [...md.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)].map(
-			(b) => b[1] ?? "",
+		const usos = [...codigo.matchAll(/["'`]publish["'`]/g)];
+		expect(usos).toHaveLength(1);
+		const funcion = codigo.slice(
+			codigo.indexOf("function cmdPublicar"),
+			codigo.indexOf("// ---------- PLG-004 resumen"),
 		);
-		expect(bloques.length).toBeGreaterThan(0);
-		for (const b of bloques) expect(b).not.toMatch(/publish/);
-		expect(md).toContain("NUNCA");
+		expect(funcion).toContain('"publish"');
+		expect(funcion).toContain('"--confirmo-repo"');
+		expect(funcion.indexOf("if (!op.si)")).toBeLessThan(
+			funcion.indexOf('"publish"'),
+		);
+		expect(codigo).not.toMatch(/\.stdin\b|input:/);
+		expect(codigo).not.toMatch(/--yes/);
+	});
+});
+
+describe("PLG-010 publicar", () => {
+	const dest = (): string => {
+		const d = join(tmp, ".mct", "liberar", "mi-repo");
+		mkdirSync(d, { recursive: true });
+		return d;
+	};
+	const llamadas = (env: Record<string, string>): string[][] =>
+		readFileSync(env.MCT_LOG as string, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as string[]);
+
+	it("PLG-010 sin --si no llama a mct", () => {
+		const env = mctFalso({});
+		writeFileSync(env.MCT_LOG as string, "");
+		const r = liberar(
+			["publicar", "--dest", dest(), "--repo", "dueno/nombre"],
+			{ env },
+		);
+		expect(r.code).toBe(2);
+		expect(readFileSync(env.MCT_LOG as string, "utf8")).toBe("");
 	});
 
-	it("C07 en plugin/scripts no hay ninguna invocación de mct publish", () => {
-		const codigo = readFileSync(SCRIPT, "utf8");
-		const lineas = codigo.split("\n").filter((l) => /publish/.test(l));
-		for (const l of lineas)
-			expect(l).toMatch(/mct publish --repo \$\{repo\}|comando:/);
-		expect(codigo).not.toMatch(/["'`]publish["'`]/);
+	it("PLG-010 con --si corre publish con el mismo repo en --confirmo-repo y --publico", () => {
+		const env = mctFalso({
+			publish: {
+				code: 0,
+				out: {
+					url: "https://github.com/dueno/nombre",
+					visibilidad: "publico",
+					tag: "v0.1.0",
+				},
+			},
+		});
+		const d = dest();
+		const r = liberar(
+			["publicar", "--dest", d, "--repo", "dueno/nombre", "--si"],
+			{ env },
+		);
+		expect(r.code).toBe(0);
+		expect(r.json).toEqual({
+			url: "https://github.com/dueno/nombre",
+			visibilidad: "publico",
+			tag: "v0.1.0",
+		});
+		expect(llamadas(env).at(-1)).toEqual([
+			"publish",
+			"--workspace",
+			join(d, ".mct"),
+			"--repo",
+			"dueno/nombre",
+			"--confirmo-repo",
+			"dueno/nombre",
+			"--publico",
+			"--json",
+		]);
+	});
+
+	it("PLG-010 si publish falla se detiene con el mensaje de mct", () => {
+		const env = mctFalso({
+			publish: {
+				code: 10,
+				out: {
+					error: {
+						codigo: "PUERTA_BLOQUEADA",
+						mensaje: "El escaneo remoto encontró algo",
+						accion: "Revisa",
+					},
+				},
+			},
+		});
+		const r = liberar(
+			["publicar", "--dest", dest(), "--repo", "dueno/nombre", "--si"],
+			{ env },
+		);
+		expect(r.code).toBe(3);
+		expect(r.json.mensaje).toContain("El escaneo remoto encontró algo");
+	});
+
+	it("PLG-010 un repo con forma inválida es uso inválido", () => {
+		const env = mctFalso({});
+		for (const repo of ["sin-barra", "a/../b", "-x/y", "a/b c"]) {
+			const r = liberar(
+				["publicar", "--dest", dest(), "--repo", repo, "--si"],
+				{ env },
+			);
+			expect(r.code).toBe(2);
+		}
 	});
 });
 
@@ -1016,6 +1093,130 @@ describe("PLG-005 etapas", () => {
 	});
 });
 
+describe("PLG-009 readme", () => {
+	const contenido = { promesa: "Libera tu repo sin filtrar secretos." };
+	const preparar = () => {
+		const origen = join(tmp, "mi-repo");
+		const dest = join(tmp, ".mct", "liberar", "mi-repo");
+		mkdirSync(origen, { recursive: true });
+		mkdirSync(dest, { recursive: true });
+		writeFileSync(
+			join(dest, "mct.config.json"),
+			JSON.stringify({ holder: "El Máster IA", licenses: { allow: [] } }),
+		);
+		return { origen, dest };
+	};
+	const cfgDe = (dest: string): Json =>
+		JSON.parse(readFileSync(join(dest, "mct.config.json"), "utf8")) as Json;
+
+	it("PLG-009 sin --escribir solo muestra lo que agregaría", () => {
+		const { origen, dest } = preparar();
+		const r = liberar(["readme", "--dest", dest, "--origen", origen], {
+			input: JSON.stringify(contenido),
+		});
+		expect(r.code).toBe(0);
+		expect(r.json).toMatchObject({
+			escrito: false,
+			readme: { plantilla: "el-master-ia", contenido },
+		});
+		expect(cfgDe(dest).readme).toBeUndefined();
+	});
+
+	it("PLG-009 con --escribir --si agrega readme al config del destino sin tocar lo demás", () => {
+		const { origen, dest } = preparar();
+		const r = liberar(
+			["readme", "--dest", dest, "--origen", origen, "--escribir", "--si"],
+			{ input: JSON.stringify(contenido) },
+		);
+		expect(r.code).toBe(0);
+		expect(cfgDe(dest)).toEqual({
+			holder: "El Máster IA",
+			licenses: { allow: [] },
+			readme: { plantilla: "el-master-ia", contenido },
+		});
+		expect(existsSync(join(origen, "mct.config.json"))).toBe(false);
+	});
+
+	it("PLG-009 estandar escribe solo la plantilla", () => {
+		const { origen, dest } = preparar();
+		const r = liberar([
+			"readme",
+			"--dest",
+			dest,
+			"--origen",
+			origen,
+			"--plantilla",
+			"estandar",
+			"--escribir",
+			"--si",
+		]);
+		expect(r.code).toBe(0);
+		expect(cfgDe(dest).readme).toEqual({ plantilla: "estandar" });
+	});
+
+	it("PLG-009 escribir sin --si no escribe", () => {
+		const { origen, dest } = preparar();
+		const r = liberar(
+			["readme", "--dest", dest, "--origen", origen, "--escribir"],
+			{ input: JSON.stringify(contenido) },
+		);
+		expect(r.code).toBe(2);
+		expect(cfgDe(dest).readme).toBeUndefined();
+	});
+
+	it("PLG-009 nunca escribe en el origen ni dentro de él", () => {
+		const { origen } = preparar();
+		for (const dest of [origen, join(origen, "sub")]) {
+			const r = liberar(
+				["readme", "--dest", dest, "--origen", origen, "--escribir", "--si"],
+				{ input: JSON.stringify(contenido) },
+			);
+			expect(r.code).toBe(2);
+		}
+		expect(existsSync(join(origen, "mct.config.json"))).toBe(false);
+		expect(existsSync(join(origen, "sub"))).toBe(false);
+	});
+
+	it("PLG-009 sin --origen o con contenido que no es objeto falla", () => {
+		const { origen, dest } = preparar();
+		expect(liberar(["readme", "--dest", dest], { input: "{}" }).code).toBe(2);
+		expect(
+			liberar(["readme", "--dest", dest, "--origen", origen], { input: "[1]" })
+				.code,
+		).toBe(2);
+	});
+
+	it("PLG-009 un destino que es un enlace al origen se rechaza", () => {
+		const { origen } = preparar();
+		const enlace = join(tmp, "enlace-al-origen");
+		symlinkSync(origen, enlace, "junction");
+		const r = liberar(
+			["readme", "--dest", enlace, "--origen", origen, "--escribir", "--si"],
+			{ input: JSON.stringify(contenido) },
+		);
+		expect(r.code).toBe(2);
+		expect(existsSync(join(origen, "mct.config.json"))).toBe(false);
+	});
+
+	it("PLG-009 un mct.config.json que es un enlace detiene sin escribir", () => {
+		const { origen, dest } = preparar();
+		const real = join(tmp, "otro.json");
+		writeFileSync(real, "{}");
+		rmSync(join(dest, "mct.config.json"));
+		try {
+			symlinkSync(real, join(dest, "mct.config.json"));
+		} catch {
+			return; // sin permiso de symlink en esta máquina
+		}
+		const r = liberar(
+			["readme", "--dest", dest, "--origen", origen, "--escribir", "--si"],
+			{ input: JSON.stringify(contenido) },
+		);
+		expect(r.code).toBe(3);
+		expect(readFileSync(real, "utf8")).toBe("{}");
+	});
+});
+
 describe("PLG-006 seguridad del plugin", () => {
 	const md = (): string =>
 		readFileSync(join(PLUGIN, "commands", "liberar.md"), "utf8");
@@ -1084,11 +1285,11 @@ describe("PLG-006 seguridad del plugin", () => {
 });
 
 describe("plugin formato", () => {
-	it("el manifiesto declara name liberar y versión 0.2.0", () => {
+	it("el manifiesto declara name liberar y versión 0.3.0", () => {
 		const m = JSON.parse(
 			readFileSync(join(PLUGIN, ".claude-plugin", "plugin.json"), "utf8"),
 		) as Json;
-		expect(m).toMatchObject({ name: "liberar", version: "0.2.0" });
+		expect(m).toMatchObject({ name: "liberar", version: "0.3.0" });
 		expect(typeof m.description).toBe("string");
 	});
 

@@ -96,6 +96,27 @@ export interface PackageHints {
 	requisitos: string[];
 }
 
+/** `mct.config.json` › `readme.contenido` (CFG-003): text written by a person, rendered by PKG-008. */
+export interface ReadmeContenido {
+	promesa: string;
+	porQueExiste: string;
+	queObtienes: string[];
+	prompt: string;
+	queNecesitas: { que: string; paraQue: string; costo: string }[];
+	comoFunciona: string;
+	faq: { p: string; r: string }[];
+	siAlgoSaleMal: { sintoma: string; solucion: string }[];
+	buenasPracticas: string[];
+	creditos: string[];
+	repo?: string;
+	laboratorio?: string;
+}
+
+/** `mct.config.json` › `readme` (CFG-003). */
+export type ReadmeConfig =
+	| { plantilla: "estandar" }
+	| { plantilla: "el-master-ia"; contenido: ReadmeContenido };
+
 export interface Adapter {
 	id: string;
 	detect(dir: string): Promise<number>;

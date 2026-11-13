@@ -349,6 +349,29 @@ describe("CFG-002 config del origen cuando el destino no tiene", () => {
 		expect(await hashTree(origen)).toBe(antes);
 	});
 
+	it("CFG-003 la config copiada al destino conserva readme validado", async () => {
+		const readme = {
+			plantilla: "el-master-ia",
+			contenido: {
+				promesa: "Libera tu repo sin filtrar secretos.",
+				porQueExiste: "Publicar a mano deja pasar llaves.",
+				queObtienes: ["Escaneo de secretos"],
+				prompt: "Instala mct y libera este repo.",
+				queNecesitas: [],
+				comoFunciona: "Copia, revisa y empaqueta.",
+				faq: [],
+				siAlgoSaleMal: [],
+				buenasPracticas: [],
+				creditos: [],
+			},
+		};
+		await put(origen, "mct.config.json", JSON.stringify({ readme }));
+		await initFromSource(opts());
+		expect(
+			JSON.parse(await readFile(join(dest, "mct.config.json"), "utf8")).readme,
+		).toEqual(readme);
+	});
+
 	it("CFG-002 si el destino ya tiene config, manda la del destino y no la pisa", async () => {
 		await put(
 			origen,

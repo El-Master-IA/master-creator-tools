@@ -52,7 +52,11 @@ export function register(program: Command): void {
 				opts.year !== undefined
 					? parseYear(opts.year, t.anioInvalido)
 					: (config.year ?? new Date().getFullYear());
-			const result = await stagePackage(raiz, { holder, year });
+			const result = await stagePackage(raiz, {
+				holder,
+				year,
+				...(config.readme !== undefined && { readme: config.readme }),
+			});
 			ctx.result(result, t.hecho(result.dist, result.archivos));
 		});
 }

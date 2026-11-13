@@ -282,3 +282,91 @@ describe("CLI-008 sin --yes", () => {
 		expect(calls.publish).toHaveLength(0);
 	});
 });
+
+describe("PUB-014 confirmación por flags (sin TTY)", () => {
+	it("PUB-014 con --confirmo-repo igual a --repo y --publico publica sin preguntar y lo hace público", async () => {
+		const { io, out } = makeIo(false);
+		const code = await runCli(
+			[
+				"publish",
+				"--repo",
+				REPO,
+				"--confirmo-repo",
+				REPO,
+				"--publico",
+				"--json",
+			],
+			io,
+			[register],
+		);
+		expect(code).toBe(0);
+		expect(calls.asked).toHaveLength(0);
+		expect(realPublishes()).toHaveLength(1);
+		expect(calls.cleaned).toBe(0);
+		expect(
+			JSON.parse(out.join("")).visibilidad ??
+				JSON.parse(out.join("")).datos?.visibilidad,
+		).toBe("publico");
+	});
+
+	it("PUB-014 sin --publico queda privado", async () => {
+		const { io } = makeIo(false);
+		const code = await runCli(
+			["publish", "--repo", REPO, "--confirmo-repo", REPO, "--json"],
+			io,
+			[register],
+		);
+		expect(code).toBe(0);
+		expect(realPublishes()).toHaveLength(1);
+		expect(await realPublishes()[0]?.confirmarPublico()).toBe(false);
+	});
+
+	for (const otro of [REPO.toLowerCase(), `${REPO} `, "AlexanderKast/otro"]) {
+		it(`PUB-014 con --confirmo-repo ${JSON.stringify(otro)} distinto cancela sin publicar`, async () => {
+			const code = await runCli(
+				[
+					"publish",
+					"--repo",
+					REPO,
+					"--confirmo-repo",
+					otro,
+					"--publico",
+					"--json",
+				],
+				makeIo(false).io,
+				[register],
+			);
+			expect(code).toBe(20);
+			expect(realPublishes()).toHaveLength(0);
+		});
+	}
+
+	it("PUB-014 --publico sin --confirmo-repo no sirve sin TTY", async () => {
+		const code = await runCli(
+			["publish", "--repo", REPO, "--publico", "--json"],
+			makeIo(false).io,
+			[register],
+		);
+		expect(code).toBe(20);
+		expect(realPublishes()).toHaveLength(0);
+	});
+
+	it("PUB-014 --publico con --private es VALIDACION", async () => {
+		const code = await runCli(
+			[
+				"publish",
+				"--repo",
+				REPO,
+				"--confirmo-repo",
+				REPO,
+				"--publico",
+				"--private",
+				"--json",
+			],
+			makeIo(false).io,
+			[register],
+		);
+		expect(code).toBe(2);
+		expect(calls.publish).toHaveLength(0);
+	});
+});

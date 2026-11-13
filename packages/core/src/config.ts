@@ -1,6 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MctError } from "@mct/contract/errors";
+import type { ReadmeConfig, ReadmeContenido } from "@mct/contract/types";
 import { parseAllow } from "@mct/licenses/verdict";
 
 /** `<dest>/mct.config.json` (datos.md). No secrets. */
@@ -20,6 +21,8 @@ export interface MctConfig {
 		ignorar?: string[];
 		motivo?: string;
 	};
+	/** README template and its human-written content (CFG-003, PKG-008). */
+	readme?: ReadmeConfig;
 }
 
 export const CONFIG_FILE = "mct.config.json";
@@ -164,10 +167,221 @@ function parseLicenses(v: unknown): NonNullable<MctConfig["licenses"]> {
 	return { allow: parseAllow({ licenses: { allow: v.allow } }), ...extra };
 }
 
+// ---------- CFG-003 readme ----------
+
+const RC = "readme.contenido";
+// Line: no control or invisible characters. Text: also allows \n and \t.
+const LINEA_PROHIBIDA = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const TEXTO_PROHIBIDO = {
+	test: (t: string): boolean => LINEA_PROHIBIDA.test(t.replace(/[\n\t]/g, "")),
+};
+const FENCE = "`".repeat(3);
+const estructura = (t: string): boolean =>
+	t.includes("<%") || t.includes(FENCE) || t.includes("~~~");
+// A line of a multi-line text cannot open a heading, rule, table or quote (PKG-008 order).
+const LINEA_DE_ESTRUCTURA = /^\s*(?:#|-{3,}|={3,}|\||>|\*{3,}|_{3,})/;
+// Author text cannot carry Markdown links or images (no tracking pixels, no phishing links).
+const enlaceOImagen = (t: string): boolean =>
+	t.includes("](") || t.includes("![");
+
+function rLinea(v: unknown, campo: string, min: number, max: number): string {
+	if (typeof v !== "string") throw bad(`${campo} debe ser texto`);
+	const t = v.trim();
+	const n = Array.from(t).length;
+	if (
+		n < min ||
+		n > max ||
+		LINEA_PROHIBIDA.test(t) ||
+		estructura(t) ||
+		enlaceOImagen(t)
+	) {
+		throw bad(
+			`${campo} debe ser una línea de ${min} a ${max} caracteres, sin <%, ~~~, tres comillas invertidas, enlaces ni imágenes`,
+		);
+	}
+	return t;
+}
+
+function rTexto(
+	v: unknown,
+	campo: string,
+	min: number,
+	max: number,
+	bloque = false,
+): string {
+	if (typeof v !== "string") throw bad(`${campo} debe ser texto`);
+	const t = v.replace(/\r\n/g, "\n").trim();
+	const n = Array.from(t).length;
+	if (
+		n < min ||
+		n > max ||
+		TEXTO_PROHIBIDO.test(t) ||
+		estructura(t) ||
+		(!bloque &&
+			(enlaceOImagen(t) ||
+				t.split("\n").some((l) => LINEA_DE_ESTRUCTURA.test(l))))
+	) {
+		throw bad(
+			`${campo} debe ser un texto de ${min} a ${max} caracteres, sin <%, ~~~, tres comillas invertidas, enlaces ni imágenes, y sin líneas que empiecen con #, ---, ===, | o >`,
+		);
+	}
+	return t;
+}
+
+function rLista<T>(
+	v: unknown,
+	campo: string,
+	min: number,
+	max: number,
+	item: (x: unknown, c: string) => T,
+): T[] {
+	if (!Array.isArray(v) || v.length < min || v.length > max) {
+		throw bad(`${campo} debe ser una lista de ${min} a ${max} elementos`);
+	}
+	return v.map((x, i) => item(x, `${campo}[${i}]`));
+}
+
+function rObj<K extends string>(
+	v: unknown,
+	campo: string,
+	claves: readonly K[],
+	max: number,
+	min = 1,
+): Record<K, string> {
+	if (!isObj(v)) throw bad(`${campo} debe ser un objeto`);
+	onlyKeys(v, claves, campo);
+	const out = {} as Record<K, string>;
+	for (const k of claves) out[k] = rLinea(v[k], `${campo}.${k}`, min, max);
+	return out;
+}
+
+const REPO =
+	/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+
+function parseContenido(v: unknown): ReadmeContenido {
+	if (!isObj(v)) throw bad(`${RC} debe ser un objeto`);
+	onlyKeys(
+		v,
+		[
+			"promesa",
+			"porQueExiste",
+			"queObtienes",
+			"prompt",
+			"queNecesitas",
+			"comoFunciona",
+			"faq",
+			"siAlgoSaleMal",
+			"buenasPracticas",
+			"creditos",
+			"repo",
+			"laboratorio",
+		],
+		RC,
+	);
+	const linea =
+		(min: number, max: number) =>
+		(x: unknown, c: string): string =>
+			rLinea(x, c, min, max);
+	const out: ReadmeContenido = {
+		promesa: rLinea(v.promesa, `${RC}.promesa`, 10, 200),
+		porQueExiste: rTexto(v.porQueExiste, `${RC}.porQueExiste`, 10, 2000),
+		queObtienes: rLista(
+			v.queObtienes,
+			`${RC}.queObtienes`,
+			1,
+			12,
+			linea(3, 200),
+		),
+		prompt: rTexto(v.prompt, `${RC}.prompt`, 10, 4000, true),
+		queNecesitas: rLista(
+			v.queNecesitas ?? [],
+			`${RC}.queNecesitas`,
+			0,
+			12,
+			(x, c) => rObj(x, c, ["que", "paraQue", "costo"] as const, 120),
+		),
+		comoFunciona: rTexto(v.comoFunciona, `${RC}.comoFunciona`, 10, 2000),
+		faq: rLista(v.faq ?? [], `${RC}.faq`, 0, 12, (x, c) => {
+			if (!isObj(x)) throw bad(`${c} debe ser un objeto`);
+			onlyKeys(x, ["p", "r"], c);
+			return {
+				p: rLinea(x.p, `${c}.p`, 3, 200),
+				r: rTexto(x.r, `${c}.r`, 3, 1000),
+			};
+		}),
+		siAlgoSaleMal: rLista(
+			v.siAlgoSaleMal ?? [],
+			`${RC}.siAlgoSaleMal`,
+			0,
+			12,
+			(x, c) => rObj(x, c, ["sintoma", "solucion"] as const, 200, 3),
+		),
+		buenasPracticas: rLista(
+			v.buenasPracticas ?? [],
+			`${RC}.buenasPracticas`,
+			0,
+			12,
+			linea(3, 200),
+		),
+		creditos: rLista(v.creditos ?? [], `${RC}.creditos`, 0, 12, linea(3, 200)),
+	};
+	if (v.repo !== undefined) {
+		const r = rLinea(v.repo, `${RC}.repo`, 3, 140);
+		if (!REPO.test(r) || r.includes("..")) {
+			throw bad(`${RC}.repo debe ser owner/nombre de GitHub`);
+		}
+		out.repo = r;
+	}
+	if (v.laboratorio !== undefined) {
+		const l = rLinea(v.laboratorio, `${RC}.laboratorio`, 9, 300);
+		let ok = false;
+		try {
+			const u = new URL(l);
+			ok =
+				u.protocol === "https:" &&
+				u.username === "" &&
+				u.password === "" &&
+				/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._~/-]*)?$/.test(l);
+		} catch {
+			ok = false;
+		}
+		if (!ok) throw bad(`${RC}.laboratorio debe ser una URL https`);
+		out.laboratorio = l;
+	}
+	return out;
+}
+
+function parseReadme(v: unknown): ReadmeConfig {
+	if (!isObj(v)) throw bad("readme debe ser un objeto");
+	onlyKeys(v, ["plantilla", "contenido"], "readme");
+	if (v.plantilla === "estandar") {
+		if (v.contenido !== undefined) {
+			throw bad('readme.contenido solo va con readme.plantilla "el-master-ia"');
+		}
+		return { plantilla: "estandar" };
+	}
+	if (v.plantilla === "el-master-ia") {
+		if (v.contenido === undefined) {
+			throw bad(
+				'readme.contenido es obligatorio con readme.plantilla "el-master-ia"',
+			);
+		}
+		return {
+			plantilla: "el-master-ia",
+			contenido: parseContenido(v.contenido),
+		};
+	}
+	throw bad('readme.plantilla debe ser "estandar" o "el-master-ia"');
+}
+
 /** Strict validation of an already parsed config. Throws VALIDACION. */
 export function validateConfig(raw: unknown): MctConfig {
 	if (!isObj(raw)) throw bad("debe ser un objeto JSON");
-	onlyKeys(raw, ["holder", "year", "exclude", "licenses", "verify"], "la raíz");
+	onlyKeys(
+		raw,
+		["holder", "year", "exclude", "licenses", "verify", "readme"],
+		"la raíz",
+	);
 	const out: MctConfig = {};
 	if (raw.holder !== undefined) out.holder = plainText(raw.holder, "holder");
 	if (raw.year !== undefined) {
@@ -180,6 +394,7 @@ export function validateConfig(raw: unknown): MctConfig {
 	if (raw.exclude !== undefined) out.exclude = parseExclude(raw.exclude);
 	if (raw.licenses !== undefined) out.licenses = parseLicenses(raw.licenses);
 	if (raw.verify !== undefined) out.verify = parseVerify(raw.verify);
+	if (raw.readme !== undefined) out.readme = parseReadme(raw.readme);
 	return out;
 }
 

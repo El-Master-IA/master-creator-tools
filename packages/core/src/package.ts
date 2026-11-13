@@ -24,6 +24,8 @@ import type {
 	Analysis,
 	Change,
 	Finding,
+	ReadmeConfig,
+	ReadmeContenido,
 	Workspace,
 } from "@mct/contract/types";
 import {
@@ -31,10 +33,12 @@ import {
 	classifyContent,
 	HEAD_BYTES,
 } from "@mct/scanner/binary";
-import { loadDictionary } from "@mct/scanner/dictionary";
+import { detectDictionary, loadDictionary } from "@mct/scanner/dictionary";
 import { leerClave } from "@mct/scanner/finding-id";
+import { detectPii } from "@mct/scanner/pii";
 import type { ScanGitleaksOptions } from "@mct/scanner/scan";
 import { scan } from "@mct/scanner/scan";
+import { detectSecrets } from "@mct/scanner/secrets";
 import { stripMetadata } from "@mct/scanner/strip-metadata";
 import { type RepoInput, renderRepo } from "@mct/templates/render";
 import { verifyApproval } from "./approval.js";
@@ -55,6 +59,8 @@ export interface StagePackageOptions {
 	holder: string;
 	/** Copyright year. */
 	year: number;
+	/** `mct.config.json` › `readme`, already validated (CFG-003, PKG-008). */
+	readme?: ReadmeConfig;
 	/** Home that holds `~/.mct/sensible.txt` and the pinned gitleaks. */
 	home?: string;
 	gitleaks?: Partial<ScanGitleaksOptions>;
@@ -126,6 +132,44 @@ async function ciData(
 		poetryLock: await exists(join(work, "poetry.lock")),
 	};
 }
+/**
+ * PKG-009: the README content is checked raw, before the template escapes it, so a
+ * secret, personal datum or dictionary term written with `&`, `|` or Markdown marks
+ * cannot slip past the post-render scan. Never repeats the value.
+ */
+function revisarContenido(
+	contenido: ReadmeContenido,
+	terms: readonly string[],
+): void {
+	const campos: [string, string][] = [];
+	for (const [k, v] of Object.entries(contenido)) {
+		const textos = (Array.isArray(v) ? v : [v]).flatMap((x) =>
+			typeof x === "string" ? [x] : Object.values(x as Record<string, string>),
+		);
+		campos.push([k, textos.join("\n")]);
+	}
+	for (const [campo, texto] of campos) {
+		const sucio = texto.replace(/[*_`\\~]/g, "");
+		const hay =
+			detectSecrets(texto).length > 0 ||
+			detectPii(texto).length > 0 ||
+			(terms.length > 0 &&
+				(detectDictionary(texto, terms).length > 0 ||
+					detectDictionary(sucio, terms).length > 0));
+		if (hay) {
+			throw new MctError(
+				"PUERTA_BLOQUEADA",
+				`readme.contenido.${campo} tiene un secreto, un dato personal o un término del diccionario`,
+				{
+					etapa: "package",
+					accion: `Quita ese dato de readme.contenido.${campo} en mct.config.json y repite package`,
+					detalle: { campo: `readme.contenido.${campo}` },
+				},
+			);
+		}
+	}
+}
+
 const STAGING = "dist.new";
 /** Files the project may already ship: the project copy wins over the template. */
 const PROJECT_WINS = (ruta: string): boolean =>
@@ -615,15 +659,37 @@ export async function stagePackage(
 			await applyChanges(staging, changes);
 
 			const nombre = await projectName(ws.work, state.origen.ref);
+			if (options.readme?.plantilla === "el-master-ia") {
+				revisarContenido(options.readme.contenido, terms);
+			}
 			const plantillas: Change[] = [];
-			for (const f of renderRepo({
+			const repoInput: RepoInput = {
 				hints: adapter.packageHints(analysis),
 				adaptador: adapter.id,
 				ci: await ciData(adapter.id, analysis, ws.work),
 				titular: options.holder,
 				nombre,
 				anio: options.year,
-			})) {
+				...(options.readme !== undefined && { readme: options.readme }),
+			};
+			let archivosRepo = renderRepo(repoInput);
+			if (options.readme?.plantilla === "el-master-ia") {
+				// PKG-008 "Qué trae": first level of dist/ = staging plus the template files.
+				const primero = new Set<string>();
+				for (const e of await readdir(staging, { withFileTypes: true })) {
+					primero.add(e.isDirectory() ? `${e.name}/` : e.name);
+				}
+				for (const f of archivosRepo) {
+					const [cabeza, ...resto] = f.ruta.split("/");
+					if (cabeza) primero.add(resto.length > 0 ? `${cabeza}/` : cabeza);
+				}
+				primero.delete("README.es.md");
+				archivosRepo = renderRepo({ ...repoInput, queTrae: [...primero] });
+				// The pair is README.md + README.en.md: a project README.es.md would contradict it.
+				const viejo = join(staging, "README.es.md");
+				if (await exists(viejo)) await rm(viejo);
+			}
+			for (const f of archivosRepo) {
 				const target = resolveInside(staging, f.ruta);
 				if (await exists(target)) {
 					if (PROJECT_WINS(f.ruta)) continue;

@@ -1,5 +1,5 @@
 {
 	"name": "liberar",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Libera un repo privado como repo público sanitizado con mct, preguntando cada decisión de seguridad. Nunca publica."
 }

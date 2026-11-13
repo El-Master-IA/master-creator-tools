@@ -1,7 +1,8 @@
 import { MctError } from "@mct/contract/errors";
-import type { PackageHints } from "@mct/contract/types";
+import type { PackageHints, ReadmeConfig } from "@mct/contract/types";
 import { Eta } from "eta";
 import { readmeConAdaptador } from "./readme.js";
+import { readmeElMaster } from "./readme-el-master-ia.js";
 import { PLANTILLAS_COMUNIDAD } from "./repo-community.js";
 import { PLANTILLAS_DOCS } from "./repo-docs.js";
 import {
@@ -22,6 +23,10 @@ export interface RepoInput {
 	adaptador?: string;
 	/** CI data from the Analysis (PKG-006). */
 	ci?: Omit<CiOpciones, "adaptador">;
+	/** README template (CFG-003); absent or "estandar" keeps the plain README. */
+	readme?: ReadmeConfig;
+	/** First-level entries of dist/ for "Qué trae" (PKG-008). */
+	queTrae?: string[];
 }
 
 export interface RepoFile {
@@ -133,12 +138,34 @@ export function renderRepo(input: RepoInput): RepoFile[] {
 		});
 	};
 
+	const elMaster =
+		input.readme?.plantilla === "el-master-ia" ? input.readme : undefined;
 	const out: RepoFile[] = [];
+	if (elMaster !== undefined) {
+		const base = {
+			nombre,
+			titular,
+			anio: input.anio,
+			contenido: elMaster.contenido,
+			queTrae: input.queTrae ?? [],
+			...(input.adaptador !== undefined && { adaptador: input.adaptador }),
+		};
+		out.push(
+			{ ruta: "README.md", contenido: readmeElMaster(base, "es") },
+			{ ruta: "README.en.md", contenido: readmeElMaster(base, "en") },
+		);
+	}
 	for (const p of [
 		...PLANTILLAS_DOCS,
 		...PLANTILLAS_COMUNIDAD,
 		...PLANTILLAS_GITHUB,
 	]) {
+		if (
+			elMaster !== undefined &&
+			(p.ruta === "README.md" || p.ruta === "README.es.md")
+		) {
+			continue;
+		}
 		const lang =
 			p.ruta.includes("/es/") || p.ruta.endsWith(".es.md") ? "es" : "en";
 		if (p.ruta === ".github/workflows/ci.yml" && input.adaptador) {
