@@ -30,7 +30,7 @@
 		"commander": "15.1.0",
 		"eta": "4.6.0",
 		"fast-glob": "3.3.3",
-		"ignore": "7.0.14",
+		"ignore": "7.0.16",
 		"picocolors": "1.1.1",
 		"spdx-correct": "3.2.0",
 		"spdx-expression-parse": "5.0.0",
